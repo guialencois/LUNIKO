@@ -1,0 +1,52 @@
+{
+  "name": "automation-platform",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx scripts/migrate.ts",
+    "db:studio": "drizzle-kit studio"
+  },
+  "dependencies": {
+    "next": "14.2.15",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "@supabase/supabase-js": "2.45.4",
+    "@supabase/ssr": "0.5.1",
+    "drizzle-orm": "0.33.0",
+    "postgres": "3.4.4",
+    "zod": "3.23.8",
+    "class-variance-authority": "0.7.0",
+    "clsx": "2.1.1",
+    "tailwind-merge": "2.5.2",
+    "lucide-react": "0.446.0",
+    "@xyflow/react": "12.3.5",
+    "zustand": "4.5.5"
+  },
+  "devDependencies": {
+    "typescript": "5.5.4",
+    "@types/node": "20.14.10",
+    "@types/react": "18.3.5",
+    "@types/react-dom": "18.3.0",
+    "tailwindcss": "3.4.10",
+    "postcss": "8.4.45",
+    "autoprefixer": "10.4.20",
+    "eslint": "8.57.0",
+    "eslint-config-next": "14.2.15",
+    "drizzle-kit": "0.24.2",
+    "tsx": "4.19.1",
+    "vitest": "2.1.1",
+    "@testing-library/react": "16.0.1",
+    "@testing-library/jest-dom": "6.5.0",
+    "jsdom": "25.0.1"
+  },
+  "engines": {
+    "node": ">=18.18.0"
+  }
+}

@@ -1,0 +1,1469 @@
+diff -ruN '--exclude=node_modules' '--exclude=.next' '--exclude=.git' '--exclude=*.tsbuildinfo' /tmp/claude-0/-home-claude/e8d0dca0-7f40-5a56-aff6-1d011dfcd9be/scratchpad/base105a/automation-platform/HANDOFF.md /home/claude/proj/automation-platform/HANDOFF.md
+--- /tmp/claude-0/-home-claude/e8d0dca0-7f40-5a56-aff6-1d011dfcd9be/scratchpad/base105a/automation-platform/HANDOFF.md	2026-09-25 16:53:41.000000000 -0300
++++ /home/claude/proj/automation-platform/HANDOFF.md	2026-09-25 17:09:20.621469419 -0300
+@@ -66,7 +66,7 @@
+ `finishExecution`, `insertExecutionNodes`, `getExecutionById` — usadas pelo
+ caminho síncrono). Orquestração em
+ `server/execution/execute-workflow.ts` (`executeWorkflow()`). API:
+-`POST /api/workflows/[workflowId]/execute`. UI: botão Execute +
++`POST /api/workflows/[id]/execute`. UI: botão Execute +
+ painel de resultado no editor (`components/workflow/editor/execution-*`).
+ Tabelas `executions`/`execution_nodes` (`lib/db/schema/executions.ts`,
+ migrations `0002_executions.sql`). Ver `docs/node-executors.md` (se
+@@ -285,16 +285,19 @@
+ - Fora de propósito: retry, maker-checker, corrigir resolução, Mercado Pago.
+ - Texto livre da resolução recusa credencial/header colado
+   (`LOOKS_LIKE_CREDENTIAL`) — o fato `resolved` é append-only.
+-- **Pré-existente, não alterado:** `app/api/workflows/[id]` e
+-  `app/api/workflows/[workflowId]/execute` — slugs irmãos com nomes
+-  diferentes; o Next.js provavelmente recusa no build. Mover `execute` para
+-  `[id]/execute` resolve sem mudar a URL.
+-
+-Validação (executada): harness 213 PASS (seções 1–7: 56; 8: 79; 9: 78) em
+-PostgreSQL 16 limpo; `concurrency-check.sh` 37 PASS (14 novos: arquivar ×
+-executar nas duas ordens, duas pessoas resolvendo, resolução × resposta
+-tardia); 12/12 controles negativos da 0007 acusados; spec Node 182 PASS com
+-41/41 mutações; rotas reais 34 PASS com 14/14 mutações; modelo de tipos 0
++- Dois débitos pré-existentes, corrigidos DEPOIS da 10.5A, como
++  infraestrutura (ver "Dois débitos de infraestrutura" no doc): o executar
++  passou para `app/api/workflows/[id]/execute` (slugs irmãos com nomes
++  diferentes quebram o build do Next; a URL não mudou), e a migration
++  `0008_rls_without_recursion.sql` acabou com a recursão das policies de RLS
++  da 0000 (função `public.is_workspace_member`, SECURITY DEFINER).
++
++Validação (executada): harness 219 PASS (seções 1–7: 56; 8: 79; 9: 78;
++10 (RLS da 0008): 6) em PostgreSQL 16 limpo; `concurrency-check.sh` 37 PASS
++(14 novos: arquivar × executar nas duas ordens, duas pessoas resolvendo,
++resolução × resposta tardia); 14/14 controles negativos de banco acusados;
++spec Node 182 PASS com 41/41 mutações; rotas reais 42 PASS com 16/16
++mutações (inclui o executar, movido para `[id]`); modelo de tipos 0
+ erros (13/13 erros plantados acusados). Uma revisão independente (outro
+ agente) achou 4 problemas reais (validador caro com corpo grande; a CHECK de
+ evidência passando com chave ausente — `NULL IN (...)` é NULL; nada amarrando
+@@ -323,7 +326,8 @@
+ antes do workspace (RESTRICT).
+ 
+ Validação que DE FATO roda neste ambiente, sem `node_modules`:
+-`scripts/f4f-lifecycle-harness.sql` (psql, 9 seções),
++`scripts/f4f-lifecycle-harness.sql` (psql, 10 seções — a 10 roda como papel
++comum, para exercitar RLS),
+ `scripts/concurrency-check.sh` (sessões psql paralelas, cenários 1–9) e
+ `scripts/effects-spec/run.sh --types --mutate --routes --routes-mutate`
+ (módulos reais de efeitos, o contrato de resolução com zod e as rotas reais,
+diff -ruN '--exclude=node_modules' '--exclude=.next' '--exclude=.git' '--exclude=*.tsbuildinfo' /tmp/claude-0/-home-claude/e8d0dca0-7f40-5a56-aff6-1d011dfcd9be/scratchpad/base105a/automation-platform/app/api/workflows/[id]/execute/route.test.ts /home/claude/proj/automation-platform/app/api/workflows/[id]/execute/route.test.ts
+--- /tmp/claude-0/-home-claude/e8d0dca0-7f40-5a56-aff6-1d011dfcd9be/scratchpad/base105a/automation-platform/app/api/workflows/[id]/execute/route.test.ts	1969-12-31 21:00:00.000000000 -0300
++++ /home/claude/proj/automation-platform/app/api/workflows/[id]/execute/route.test.ts	2026-09-25 17:03:42.011426440 -0300
+@@ -0,0 +1,351 @@
++import { describe, it, expect, vi, beforeEach } from "vitest";
++import { NextRequest } from "next/server";
++import { ExecutionEngineError, ExecutionErrorCode } from "@/lib/execution/errors";
++
++// Mock every boundary the route talks to, so this test exercises only the
++// route's own control flow (auth check -> workspace derivation -> body
++// validation -> executeWorkflow -> response shaping), not Supabase, Drizzle,
++// or the engine itself (those are covered by their own unit/integration
++// tests elsewhere).
++vi.mock("@/lib/auth/session", () => ({
++  getCurrentUser: vi.fn(),
++}));
++vi.mock("@/lib/auth/actions", () => ({
++  ensureDefaultWorkspace: vi.fn(),
++}));
++vi.mock("@/server/execution/execute-workflow", () => ({
++  executeWorkflow: vi.fn(),
++}));
++vi.mock("@/server/execution/enqueue-workflow-execution", () => ({
++  enqueueWorkflowExecution: vi.fn(),
++}));
++
++import { getCurrentUser } from "@/lib/auth/session";
++import { ensureDefaultWorkspace } from "@/lib/auth/actions";
++import { executeWorkflow } from "@/server/execution/execute-workflow";
++import { enqueueWorkflowExecution } from "@/server/execution/enqueue-workflow-execution";
++import { POST } from "./route";
++
++const mockGetCurrentUser = vi.mocked(getCurrentUser);
++const mockEnsureDefaultWorkspace = vi.mocked(ensureDefaultWorkspace);
++const mockExecuteWorkflow = vi.mocked(executeWorkflow);
++const mockEnqueueWorkflowExecution = vi.mocked(enqueueWorkflowExecution);
++
++function makeRequest(body?: unknown, raw?: string) {
++  return new NextRequest("http://localhost/api/workflows/wf-1/execute", {
++    method: "POST",
++    body: raw ?? (body === undefined ? undefined : JSON.stringify(body)),
++  });
++}
++
++const ROUTE_PARAMS = { params: { id: "wf-1" } };
++
++beforeEach(() => {
++  vi.clearAllMocks();
++});
++
++describe("POST /api/workflows/[id]/execute", () => {
++  it("1. rejects an unauthenticated request with 401, never calling executeWorkflow", async () => {
++    mockGetCurrentUser.mockResolvedValue(null as never);
++
++    const response = await POST(makeRequest({ input: { items: [{ json: {} }] } }), ROUTE_PARAMS);
++    const json = await response.json();
++
++    expect(response.status).toBe(401);
++    expect(json.error.code).toBe("UNAUTHENTICATED");
++    expect(mockExecuteWorkflow).not.toHaveBeenCalled();
++  });
++
++  it("2. returns 404 when the workflow doesn't exist", async () => {
++    mockGetCurrentUser.mockResolvedValue({ id: "user-1", email: "a@b.com" } as never);
++    mockEnsureDefaultWorkspace.mockResolvedValue("ws-1");
++    mockExecuteWorkflow.mockRejectedValue(
++      new ExecutionEngineError(ExecutionErrorCode.WORKFLOW_NOT_FOUND, "This workflow could not be found")
++    );
++
++    const response = await POST(makeRequest({}), ROUTE_PARAMS);
++    const json = await response.json();
++
++    expect(response.status).toBe(404);
++    expect(json.error.code).toBe("WORKFLOW_NOT_FOUND");
++  });
++
++  it("3. a workflow belonging to another workspace is rejected the same way (not found, not leaked)", async () => {
++    // The route never reads workspaceId from the client at all — it always
++    // uses what ensureDefaultWorkspace(user.id) resolves to. A workflow in
++    // a workspace the user isn't in simply isn't found by executeWorkflow's
++    // own getWorkflowById (workspace-scoped query), which is exactly what
++    // we simulate here.
++    mockGetCurrentUser.mockResolvedValue({ id: "user-1", email: "a@b.com" } as never);
++    mockEnsureDefaultWorkspace.mockResolvedValue("ws-1");
++    mockExecuteWorkflow.mockRejectedValue(
++      new ExecutionEngineError(ExecutionErrorCode.WORKFLOW_NOT_FOUND, "This workflow could not be found")
++    );
++
++    // Try to smuggle a workspaceId in the body — it must be ignored.
++    const response = await POST(
++      makeRequest({ workspaceId: "someone-elses-workspace", input: { items: [{ json: {} }] } }),
++      ROUTE_PARAMS
++    );
++    const json = await response.json();
++
++    expect(response.status).toBe(404);
++    const callArgs = mockExecuteWorkflow.mock.calls[0][0];
++    expect(callArgs.workspaceId).toBe("ws-1"); // never "someone-elses-workspace"
++    expect(json.error.code).toBe("WORKFLOW_NOT_FOUND");
++  });
++
++  it("4a. rejects malformed JSON with 400 INVALID_JSON", async () => {
++    mockGetCurrentUser.mockResolvedValue({ id: "user-1", email: "a@b.com" } as never);
++    mockEnsureDefaultWorkspace.mockResolvedValue("ws-1");
++
++    const response = await POST(makeRequest(undefined, "{not valid json"), ROUTE_PARAMS);
++    const json = await response.json();
++
++    expect(response.status).toBe(400);
++    expect(json.error.code).toBe("INVALID_JSON");
++    expect(mockExecuteWorkflow).not.toHaveBeenCalled();
++  });
++
++  it("4b. rejects a body that doesn't match the schema with 400 VALIDATION_ERROR", async () => {
++    mockGetCurrentUser.mockResolvedValue({ id: "user-1", email: "a@b.com" } as never);
++    mockEnsureDefaultWorkspace.mockResolvedValue("ws-1");
++
++    const response = await POST(makeRequest({ input: { items: "not-an-array" } }), ROUTE_PARAMS);
++    const json = await response.json();
++
++    expect(response.status).toBe(400);
++    expect(json.error.code).toBe("VALIDATION_ERROR");
++    expect(mockExecuteWorkflow).not.toHaveBeenCalled();
++  });
++
++  it("5. rejects an input over the item-count limit with 400 VALIDATION_ERROR", async () => {
++    mockGetCurrentUser.mockResolvedValue({ id: "user-1", email: "a@b.com" } as never);
++    mockEnsureDefaultWorkspace.mockResolvedValue("ws-1");
++
++    const tooManyItems = Array.from({ length: 1001 }, () => ({ json: {} }));
++    const response = await POST(
++      makeRequest({ input: { items: tooManyItems } }),
++      ROUTE_PARAMS
++    );
++    const json = await response.json();
++
++    expect(response.status).toBe(400);
++    expect(json.error.code).toBe("VALIDATION_ERROR");
++    expect(mockExecuteWorkflow).not.toHaveBeenCalled();
++  });
++
++  it("6. returns 200 with status \"error\" when the workflow document itself is invalid", async () => {
++    mockGetCurrentUser.mockResolvedValue({ id: "user-1", email: "a@b.com" } as never);
++    mockEnsureDefaultWorkspace.mockResolvedValue("ws-1");
++    mockExecuteWorkflow.mockResolvedValue({
++      executionId: "exec-1",
++      status: "error",
++      error: { code: "WORKFLOW_INVALID", message: "Workflow document failed validation" },
++    });
++
++    const response = await POST(makeRequest({}), ROUTE_PARAMS);
++    const json = await response.json();
++
++    expect(response.status).toBe(200);
++    expect(json.status).toBe("error");
++    expect(json.error.code).toBe("WORKFLOW_INVALID");
++  });
++
++  it("7. returns 200 with status \"success\" and a result on a successful execution", async () => {
++    mockGetCurrentUser.mockResolvedValue({ id: "user-1", email: "a@b.com" } as never);
++    mockEnsureDefaultWorkspace.mockResolvedValue("ws-1");
++    mockExecuteWorkflow.mockResolvedValue({
++      executionId: "exec-1",
++      status: "success",
++      result: { items: [{ json: { name: "Jackson" } }] },
++    });
++
++    const response = await POST(
++      makeRequest({ input: { items: [{ json: { name: "Jackson" } }] } }),
++      ROUTE_PARAMS
++    );
++    const json = await response.json();
++
++    expect(response.status).toBe(200);
++    expect(json).toEqual({
++      executionId: "exec-1",
++      status: "success",
++      result: { items: [{ json: { name: "Jackson" } }] },
++    });
++  });
++
++  it("8. returns 200 with status \"error\" when a node fails during execution", async () => {
++    mockGetCurrentUser.mockResolvedValue({ id: "user-1", email: "a@b.com" } as never);
++    mockEnsureDefaultWorkspace.mockResolvedValue("ws-1");
++    mockExecuteWorkflow.mockResolvedValue({
++      executionId: "exec-1",
++      status: "error",
++      error: { code: "NODE_EXECUTION_FAILED", message: "Node failed", nodeId: "n1" },
++    });
++
++    const response = await POST(makeRequest({}), ROUTE_PARAMS);
++    const json = await response.json();
++
++    expect(response.status).toBe(200);
++    expect(json.status).toBe("error");
++    expect(json.error.code).toBe("NODE_EXECUTION_FAILED");
++    expect(json.error.nodeId).toBe("n1");
++  });
++
++  it("9. returns 200 with status \"error\" and code NOT_IMPLEMENTED for an unsupported executor", async () => {
++    mockGetCurrentUser.mockResolvedValue({ id: "user-1", email: "a@b.com" } as never);
++    mockEnsureDefaultWorkspace.mockResolvedValue("ws-1");
++    mockExecuteWorkflow.mockResolvedValue({
++      executionId: "exec-1",
++      status: "error",
++      error: {
++        code: "NOT_IMPLEMENTED",
++        message: "HTTP Request execution is not available in this execution environment yet",
++        nodeId: "h1",
++      },
++    });
++
++    const response = await POST(makeRequest({}), ROUTE_PARAMS);
++    const json = await response.json();
++
++    expect(response.status).toBe(200);
++    expect(json.error.code).toBe("NOT_IMPLEMENTED");
++  });
++
++  it("never leaks a stack trace or internal detail on an unexpected error", async () => {
++    mockGetCurrentUser.mockResolvedValue({ id: "user-1", email: "a@b.com" } as never);
++    mockEnsureDefaultWorkspace.mockResolvedValue("ws-1");
++    mockExecuteWorkflow.mockRejectedValue(new Error("some internal db connection string leak"));
++
++    const response = await POST(makeRequest({}), ROUTE_PARAMS);
++    const json = await response.json();
++
++    expect(response.status).toBe(500);
++    expect(json.error.code).toBe("EXECUTION_FAILED");
++    expect(JSON.stringify(json)).not.toContain("connection string");
++  });
++
++  // ------------------------------------------------------------------
++  // Fase 4H: mode "async". The producer side of the queue. Everything
++  // below asserts the same thing from different angles — this branch must
++  // never run the workflow during the request.
++  // ------------------------------------------------------------------
++
++  function authenticate() {
++    mockGetCurrentUser.mockResolvedValue({ id: "user-1", email: "a@b.com" } as never);
++    mockEnsureDefaultWorkspace.mockResolvedValue("ws-1");
++  }
++
++  it('10. mode "async" returns 202 with the queued execution and never runs the engine', async () => {
++    authenticate();
++    mockEnqueueWorkflowExecution.mockResolvedValue({ executionId: "exec-1", status: "queued" });
++
++    const response = await POST(makeRequest({ mode: "async" }), ROUTE_PARAMS);
++    const json = await response.json();
++
++    expect(response.status).toBe(202);
++    expect(json).toEqual({ executionId: "exec-1", status: "queued" });
++    // The whole point: no synchronous execution happened.
++    expect(mockExecuteWorkflow).not.toHaveBeenCalled();
++    expect(mockEnqueueWorkflowExecution).toHaveBeenCalledWith({
++      userId: "user-1",
++      workspaceId: "ws-1",
++      workflowId: "wf-1",
++    });
++  });
++
++  it("11. the default is still sync: an unchanged body runs the workflow as before", async () => {
++    authenticate();
++    mockExecuteWorkflow.mockResolvedValue({
++      executionId: "exec-2",
++      status: "success",
++      result: { items: [{ json: { ok: true } }] },
++    } as never);
++
++    const response = await POST(makeRequest({}), ROUTE_PARAMS);
++    const json = await response.json();
++
++    expect(response.status).toBe(200);
++    expect(json.status).toBe("success");
++    expect(mockExecuteWorkflow).toHaveBeenCalledTimes(1);
++    expect(mockEnqueueWorkflowExecution).not.toHaveBeenCalled();
++  });
++
++  it('12. rejects input together with mode "async" instead of silently dropping it', async () => {
++    authenticate();
++
++    const response = await POST(
++      makeRequest({ mode: "async", input: { items: [{ json: { a: 1 } }] } }),
++      ROUTE_PARAMS
++    );
++    const json = await response.json();
++
++    expect(response.status).toBe(400);
++    expect(json.error.code).toBe("VALIDATION_ERROR");
++    expect(mockEnqueueWorkflowExecution).not.toHaveBeenCalled();
++    expect(mockExecuteWorkflow).not.toHaveBeenCalled();
++  });
++
++  it("13. rejects an unknown mode", async () => {
++    authenticate();
++
++    const response = await POST(makeRequest({ mode: "eventual" }), ROUTE_PARAMS);
++
++    expect(response.status).toBe(400);
++    expect(mockEnqueueWorkflowExecution).not.toHaveBeenCalled();
++  });
++
++  it('14. mode "async" maps a missing workflow to the same 404 the sync branch gives', async () => {
++    authenticate();
++    mockEnqueueWorkflowExecution.mockRejectedValue(
++      new ExecutionEngineError(ExecutionErrorCode.WORKFLOW_NOT_FOUND, "This workflow could not be found")
++    );
++
++    const response = await POST(makeRequest({ mode: "async" }), ROUTE_PARAMS);
++    const json = await response.json();
++
++    expect(response.status).toBe(404);
++    expect(json.error.code).toBe("WORKFLOW_NOT_FOUND");
++  });
++
++  it('15. mode "async" maps an unexecutable document to 400 with its engine code', async () => {
++    authenticate();
++    mockEnqueueWorkflowExecution.mockRejectedValue(
++      new ExecutionEngineError(ExecutionErrorCode.WORKFLOW_CONTAINS_CYCLE, "Workflow contains a cycle")
++    );
++
++    const response = await POST(makeRequest({ mode: "async" }), ROUTE_PARAMS);
++    const json = await response.json();
++
++    expect(response.status).toBe(400);
++    expect(json.error.code).toBe("WORKFLOW_CONTAINS_CYCLE");
++  });
++
++  it("16. an unauthenticated async request is rejected before anything is queued", async () => {
++    mockGetCurrentUser.mockResolvedValue(null as never);
++
++    const response = await POST(makeRequest({ mode: "async" }), ROUTE_PARAMS);
++
++    expect(response.status).toBe(401);
++    expect(mockEnqueueWorkflowExecution).not.toHaveBeenCalled();
++  });
++
++  it("17. (Fase 10.5A) an archived workflow is a 409 WORKFLOW_ARCHIVED, on both paths", async () => {
++    authenticate();
++    const archived = new ExecutionEngineError(
++      ExecutionErrorCode.WORKFLOW_ARCHIVED,
++      "This workflow is archived. Restore it before executing it."
++    );
++    mockExecuteWorkflow.mockRejectedValue(archived);
++    mockEnqueueWorkflowExecution.mockRejectedValue(archived);
++
++    for (const body of [{}, { mode: "async" }]) {
++      const response = await POST(makeRequest(body), ROUTE_PARAMS);
++      const json = await response.json();
++      expect(response.status).toBe(409);
++      expect(json.error.code).toBe("WORKFLOW_ARCHIVED");
++      expect(json.error.message).toMatch(/Restore it/);
++    }
++  });
++});
+diff -ruN '--exclude=node_modules' '--exclude=.next' '--exclude=.git' '--exclude=*.tsbuildinfo' /tmp/claude-0/-home-claude/e8d0dca0-7f40-5a56-aff6-1d011dfcd9be/scratchpad/base105a/automation-platform/app/api/workflows/[id]/execute/route.ts /home/claude/proj/automation-platform/app/api/workflows/[id]/execute/route.ts
+--- /tmp/claude-0/-home-claude/e8d0dca0-7f40-5a56-aff6-1d011dfcd9be/scratchpad/base105a/automation-platform/app/api/workflows/[id]/execute/route.ts	1969-12-31 21:00:00.000000000 -0300
++++ /home/claude/proj/automation-platform/app/api/workflows/[id]/execute/route.ts	2026-09-25 17:03:42.011140492 -0300
+@@ -0,0 +1,134 @@
++import { NextRequest, NextResponse } from "next/server";
++import { getCurrentUser } from "@/lib/auth/session";
++import { ensureDefaultWorkspace } from "@/lib/auth/actions";
++import { executeWorkflow } from "@/server/execution/execute-workflow";
++import { enqueueWorkflowExecution } from "@/server/execution/enqueue-workflow-execution";
++import { QueueError } from "@/server/execution/execution-queue";
++import {
++  validateExecuteWorkflowRequest,
++  ExecuteRequestValidationError,
++} from "@/server/execution/validation";
++import { ExecutionEngineError } from "@/lib/execution/errors";
++import { apiError } from "@/lib/api-error";
++
++interface RouteParams {
++  // `id`, like the sibling routes under app/api/workflows/[id]: two dynamic
++  // segments with different names at the same level break the Next.js build
++  // ("You cannot use different slug names for the same dynamic path"). The
++  // public URL is unchanged: POST /api/workflows/<id>/execute.
++  params: { id: string };
++}
++
++/**
++ * Two lifecycles behind one endpoint, chosen by the request's `mode`
++ * (default "sync" — see server/execution/validation.ts).
++ *
++ *   mode "sync"  (default, unchanged since Fase 3)
++ *     auth -> workspace -> workflow -> executeWorkflow() -> persistence
++ *     -> 200 { executionId, status, result | error }
++ *
++ *   mode "async" (Fase 4H — the producer side of the queue)
++ *     auth -> workspace -> workflow -> validate -> snapshot
++ *     -> enqueueWorkflowExecution() -> 202 { executionId, status: "queued" }
++ *     Nothing is executed during the request.
++ *
++ * This route touches neither planner, engine nor repository directly: both
++ * branches delegate to a service that enforces workspace membership on
++ * every database call it makes. Duplicating any of that here would be the
++ * "segundo sistema" the task says not to build — and the async branch in
++ * particular must never call processQueuedExecution() as a stand-in for a
++ * real consumer, which would just be the synchronous path wearing a queue
++ * as a costume.
++ *
++ * IMPORTANT, AND NOT HIDDEN: nothing consumes this queue in production
++ * yet. There is no worker process and no deployment that could host one
++ * (the target is serverless), no GET /api/executions/[executionId], and no
++ * polling in the editor. An execution created with mode "async" is
++ * therefore correctly queued and simply waits. That is why "sync" is still
++ * the default and why the editor was not migrated — see the "Consumidor da
++ * fila" section in docs/async-execution.md for exactly what is missing.
++ */
++export async function POST(request: NextRequest, { params }: RouteParams) {
++  const user = await getCurrentUser();
++  if (!user) return apiError("UNAUTHENTICATED", "Not authenticated", 401);
++
++  // workspaceId is always derived server-side from the authenticated user —
++  // never read from the request body, query string, or params. A workflow
++  // belonging to a different workspace is simply not found (see
++  // executeWorkflow -> getWorkflowById, which already filters by this
++  // workspaceId), not distinguished from "doesn't exist" in the response.
++  const workspaceId = await ensureDefaultWorkspace(user.id, user.email ?? "usuário");
++
++  let body: unknown = {};
++  const rawBody = await request.text();
++  if (rawBody.length > 0) {
++    try {
++      body = JSON.parse(rawBody);
++    } catch {
++      return apiError("INVALID_JSON", "Request body must be valid JSON", 400);
++    }
++  }
++
++  let parsed;
++  try {
++    parsed = validateExecuteWorkflowRequest(body);
++  } catch (err) {
++    if (err instanceof ExecuteRequestValidationError) {
++      return apiError("VALIDATION_ERROR", err.message, 400);
++    }
++    throw err;
++  }
++
++  try {
++    if (parsed.mode === "async") {
++      const queued = await enqueueWorkflowExecution({
++        userId: user.id,
++        workspaceId,
++        workflowId: params.id,
++      });
++
++      // 202 Accepted: the request was accepted for processing and the
++      // workflow has NOT run. Distinct from the 200 the sync branch
++      // returns, so a client can tell the two apart from the status line
++      // alone, without inspecting the body.
++      return NextResponse.json(queued, { status: 202 });
++    }
++
++    const result = await executeWorkflow({
++      userId: user.id,
++      workspaceId,
++      workflowId: params.id,
++      input: parsed.input,
++    });
++
++    // The request itself was handled correctly regardless of whether the
++    // *workflow* ended in success/error/cancelled — that outcome is
++    // communicated in the response body's `status` field (same convention
++    // executeWorkflow already returns), not the HTTP status code. Only
++    // request-level failures (auth, validation, not-found) use non-200s.
++    return NextResponse.json(result, { status: 200 });
++  } catch (err) {
++    if (err instanceof ExecutionEngineError && err.code === "WORKFLOW_NOT_FOUND") {
++      return apiError("WORKFLOW_NOT_FOUND", "This workflow could not be found", 404);
++    }
++    if (err instanceof ExecutionEngineError && err.code === "WORKFLOW_ARCHIVED") {
++      // Fase 10.5A: the workflow exists but is archived — a state conflict
++      // the caller can resolve (restore), not a malformed request.
++      return apiError("WORKFLOW_ARCHIVED", err.message, 409);
++    }
++    if (err instanceof QueueError) {
++      // Reaching this means the row created a moment earlier was already
++      // not queueable — nothing in the current design can do that, so it
++      // is a server-side inconsistency, not a client error.
++      return apiError(err.code, "Unable to queue this execution. Please try again.", 500);
++    }
++    if (err instanceof ExecutionEngineError) {
++      // Any other ExecutionEngineError reaching here is unexpected (the
++      // service already catches planning/engine errors internally and
++      // returns them as a normal response) — reuse the same structured
++      // error shape rather than a generic 500 with no code.
++      return apiError(err.code, err.message, 400);
++    }
++    return apiError("EXECUTION_FAILED", "Unable to execute workflow. Please try again.", 500);
++  }
++}
+diff -ruN '--exclude=node_modules' '--exclude=.next' '--exclude=.git' '--exclude=*.tsbuildinfo' /tmp/claude-0/-home-claude/e8d0dca0-7f40-5a56-aff6-1d011dfcd9be/scratchpad/base105a/automation-platform/app/api/workflows/[workflowId]/execute/route.test.ts /home/claude/proj/automation-platform/app/api/workflows/[workflowId]/execute/route.test.ts
+--- /tmp/claude-0/-home-claude/e8d0dca0-7f40-5a56-aff6-1d011dfcd9be/scratchpad/base105a/automation-platform/app/api/workflows/[workflowId]/execute/route.test.ts	2026-09-21 19:15:10.000000000 -0300
++++ /home/claude/proj/automation-platform/app/api/workflows/[workflowId]/execute/route.test.ts	1969-12-31 21:00:00.000000000 -0300
+@@ -1,351 +0,0 @@
+-import { describe, it, expect, vi, beforeEach } from "vitest";
+-import { NextRequest } from "next/server";
+-import { ExecutionEngineError, ExecutionErrorCode } from "@/lib/execution/errors";
+-
+-// Mock every boundary the route talks to, so this test exercises only the
+-// route's own control flow (auth check -> workspace derivation -> body
+-// validation -> executeWorkflow -> response shaping), not Supabase, Drizzle,
+-// or the engine itself (those are covered by their own unit/integration
+-// tests elsewhere).
+-vi.mock("@/lib/auth/session", () => ({
+-  getCurrentUser: vi.fn(),
+-}));
+-vi.mock("@/lib/auth/actions", () => ({
+-  ensureDefaultWorkspace: vi.fn(),
+-}));
+-vi.mock("@/server/execution/execute-workflow", () => ({
+-  executeWorkflow: vi.fn(),
+-}));
+-vi.mock("@/server/execution/enqueue-workflow-execution", () => ({
+-  enqueueWorkflowExecution: vi.fn(),
+-}));
+-
+-import { getCurrentUser } from "@/lib/auth/session";
+-import { ensureDefaultWorkspace } from "@/lib/auth/actions";
+-import { executeWorkflow } from "@/server/execution/execute-workflow";
+-import { enqueueWorkflowExecution } from "@/server/execution/enqueue-workflow-execution";
+-import { POST } from "./route";
+-
+-const mockGetCurrentUser = vi.mocked(getCurrentUser);
+-const mockEnsureDefaultWorkspace = vi.mocked(ensureDefaultWorkspace);
+-const mockExecuteWorkflow = vi.mocked(executeWorkflow);
+-const mockEnqueueWorkflowExecution = vi.mocked(enqueueWorkflowExecution);
+-
+-function makeRequest(body?: unknown, raw?: string) {
+-  return new NextRequest("http://localhost/api/workflows/wf-1/execute", {
+-    method: "POST",
+-    body: raw ?? (body === undefined ? undefined : JSON.stringify(body)),
+-  });
+-}
+-
+-const ROUTE_PARAMS = { params: { workflowId: "wf-1" } };
+-
+-beforeEach(() => {
+-  vi.clearAllMocks();
+-});
+-
+-describe("POST /api/workflows/[workflowId]/execute", () => {
+-  it("1. rejects an unauthenticated request with 401, never calling executeWorkflow", async () => {
+-    mockGetCurrentUser.mockResolvedValue(null as never);
+-
+-    const response = await POST(makeRequest({ input: { items: [{ json: {} }] } }), ROUTE_PARAMS);
+-    const json = await response.json();
+-
+-    expect(response.status).toBe(401);
+-    expect(json.error.code).toBe("UNAUTHENTICATED");
+-    expect(mockExecuteWorkflow).not.toHaveBeenCalled();
+-  });
+-
+-  it("2. returns 404 when the workflow doesn't exist", async () => {
+-    mockGetCurrentUser.mockResolvedValue({ id: "user-1", email: "a@b.com" } as never);
+-    mockEnsureDefaultWorkspace.mockResolvedValue("ws-1");
+-    mockExecuteWorkflow.mockRejectedValue(
+-      new ExecutionEngineError(ExecutionErrorCode.WORKFLOW_NOT_FOUND, "This workflow could not be found")
+-    );
+-
+-    const response = await POST(makeRequest({}), ROUTE_PARAMS);
+-    const json = await response.json();
+-
+-    expect(response.status).toBe(404);
+-    expect(json.error.code).toBe("WORKFLOW_NOT_FOUND");
+-  });
+-
+-  it("3. a workflow belonging to another workspace is rejected the same way (not found, not leaked)", async () => {
+-    // The route never reads workspaceId from the client at all — it always
+-    // uses what ensureDefaultWorkspace(user.id) resolves to. A workflow in
+-    // a workspace the user isn't in simply isn't found by executeWorkflow's
+-    // own getWorkflowById (workspace-scoped query), which is exactly what
+-    // we simulate here.
+-    mockGetCurrentUser.mockResolvedValue({ id: "user-1", email: "a@b.com" } as never);
+-    mockEnsureDefaultWorkspace.mockResolvedValue("ws-1");
+-    mockExecuteWorkflow.mockRejectedValue(
+-      new ExecutionEngineError(ExecutionErrorCode.WORKFLOW_NOT_FOUND, "This workflow could not be found")
+-    );
+-
+-    // Try to smuggle a workspaceId in the body — it must be ignored.
+-    const response = await POST(
+-      makeRequest({ workspaceId: "someone-elses-workspace", input: { items: [{ json: {} }] } }),
+-      ROUTE_PARAMS
+-    );
+-    const json = await response.json();
+-
+-    expect(response.status).toBe(404);
+-    const callArgs = mockExecuteWorkflow.mock.calls[0][0];
+-    expect(callArgs.workspaceId).toBe("ws-1"); // never "someone-elses-workspace"
+-    expect(json.error.code).toBe("WORKFLOW_NOT_FOUND");
+-  });
+-
+-  it("4a. rejects malformed JSON with 400 INVALID_JSON", async () => {
+-    mockGetCurrentUser.mockResolvedValue({ id: "user-1", email: "a@b.com" } as never);
+-    mockEnsureDefaultWorkspace.mockResolvedValue("ws-1");
+-
+-    const response = await POST(makeRequest(undefined, "{not valid json"), ROUTE_PARAMS);
+-    const json = await response.json();
+-
+-    expect(response.status).toBe(400);
+-    expect(json.error.code).toBe("INVALID_JSON");
+-    expect(mockExecuteWorkflow).not.toHaveBeenCalled();
+-  });
+-
+-  it("4b. rejects a body that doesn't match the schema with 400 VALIDATION_ERROR", async () => {
+-    mockGetCurrentUser.mockResolvedValue({ id: "user-1", email: "a@b.com" } as never);
+-    mockEnsureDefaultWorkspace.mockResolvedValue("ws-1");
+-
+-    const response = await POST(makeRequest({ input: { items: "not-an-array" } }), ROUTE_PARAMS);
+-    const json = await response.json();
+-
+-    expect(response.status).toBe(400);
+-    expect(json.error.code).toBe("VALIDATION_ERROR");
+-    expect(mockExecuteWorkflow).not.toHaveBeenCalled();
+-  });
+-
+-  it("5. rejects an input over the item-count limit with 400 VALIDATION_ERROR", async () => {
+-    mockGetCurrentUser.mockResolvedValue({ id: "user-1", email: "a@b.com" } as never);
+-    mockEnsureDefaultWorkspace.mockResolvedValue("ws-1");
+-
+-    const tooManyItems = Array.from({ length: 1001 }, () => ({ json: {} }));
+-    const response = await POST(
+-      makeRequest({ input: { items: tooManyItems } }),
+-      ROUTE_PARAMS
+-    );
+-    const json = await response.json();
+-
+-    expect(response.status).toBe(400);
+-    expect(json.error.code).toBe("VALIDATION_ERROR");
+-    expect(mockExecuteWorkflow).not.toHaveBeenCalled();
+-  });
+-
+-  it("6. returns 200 with status \"error\" when the workflow document itself is invalid", async () => {
+-    mockGetCurrentUser.mockResolvedValue({ id: "user-1", email: "a@b.com" } as never);
+-    mockEnsureDefaultWorkspace.mockResolvedValue("ws-1");
+-    mockExecuteWorkflow.mockResolvedValue({
+-      executionId: "exec-1",
+-      status: "error",
+-      error: { code: "WORKFLOW_INVALID", message: "Workflow document failed validation" },
+-    });
+-
+-    const response = await POST(makeRequest({}), ROUTE_PARAMS);
+-    const json = await response.json();
+-
+-    expect(response.status).toBe(200);
+-    expect(json.status).toBe("error");
+-    expect(json.error.code).toBe("WORKFLOW_INVALID");
+-  });
+-
+-  it("7. returns 200 with status \"success\" and a result on a successful execution", async () => {
+-    mockGetCurrentUser.mockResolvedValue({ id: "user-1", email: "a@b.com" } as never);
+-    mockEnsureDefaultWorkspace.mockResolvedValue("ws-1");
+-    mockExecuteWorkflow.mockResolvedValue({
+-      executionId: "exec-1",
+-      status: "success",
+-      result: { items: [{ json: { name: "Jackson" } }] },
+-    });
+-
+-    const response = await POST(
+-      makeRequest({ input: { items: [{ json: { name: "Jackson" } }] } }),
+-      ROUTE_PARAMS
+-    );
+-    const json = await response.json();
+-
+-    expect(response.status).toBe(200);
+-    expect(json).toEqual({
+-      executionId: "exec-1",
+-      status: "success",
+-      result: { items: [{ json: { name: "Jackson" } }] },
+-    });
+-  });
+-
+-  it("8. returns 200 with status \"error\" when a node fails during execution", async () => {
+-    mockGetCurrentUser.mockResolvedValue({ id: "user-1", email: "a@b.com" } as never);
+-    mockEnsureDefaultWorkspace.mockResolvedValue("ws-1");
+-    mockExecuteWorkflow.mockResolvedValue({
+-      executionId: "exec-1",
+-      status: "error",
+-      error: { code: "NODE_EXECUTION_FAILED", message: "Node failed", nodeId: "n1" },
+-    });
+-
+-    const response = await POST(makeRequest({}), ROUTE_PARAMS);
+-    const json = await response.json();
+-
+-    expect(response.status).toBe(200);
+-    expect(json.status).toBe("error");
+-    expect(json.error.code).toBe("NODE_EXECUTION_FAILED");
+-    expect(json.error.nodeId).toBe("n1");
+-  });
+-
+-  it("9. returns 200 with status \"error\" and code NOT_IMPLEMENTED for an unsupported executor", async () => {
+-    mockGetCurrentUser.mockResolvedValue({ id: "user-1", email: "a@b.com" } as never);
+-    mockEnsureDefaultWorkspace.mockResolvedValue("ws-1");
+-    mockExecuteWorkflow.mockResolvedValue({
+-      executionId: "exec-1",
+-      status: "error",
+-      error: {
+-        code: "NOT_IMPLEMENTED",
+-        message: "HTTP Request execution is not available in this execution environment yet",
+-        nodeId: "h1",
+-      },
+-    });
+-
+-    const response = await POST(makeRequest({}), ROUTE_PARAMS);
+-    const json = await response.json();
+-
+-    expect(response.status).toBe(200);
+-    expect(json.error.code).toBe("NOT_IMPLEMENTED");
+-  });
+-
+-  it("never leaks a stack trace or internal detail on an unexpected error", async () => {
+-    mockGetCurrentUser.mockResolvedValue({ id: "user-1", email: "a@b.com" } as never);
+-    mockEnsureDefaultWorkspace.mockResolvedValue("ws-1");
+-    mockExecuteWorkflow.mockRejectedValue(new Error("some internal db connection string leak"));
+-
+-    const response = await POST(makeRequest({}), ROUTE_PARAMS);
+-    const json = await response.json();
+-
+-    expect(response.status).toBe(500);
+-    expect(json.error.code).toBe("EXECUTION_FAILED");
+-    expect(JSON.stringify(json)).not.toContain("connection string");
+-  });
+-
+-  // ------------------------------------------------------------------
+-  // Fase 4H: mode "async". The producer side of the queue. Everything
+-  // below asserts the same thing from different angles — this branch must
+-  // never run the workflow during the request.
+-  // ------------------------------------------------------------------
+-
+-  function authenticate() {
+-    mockGetCurrentUser.mockResolvedValue({ id: "user-1", email: "a@b.com" } as never);
+-    mockEnsureDefaultWorkspace.mockResolvedValue("ws-1");
+-  }
+-
+-  it('10. mode "async" returns 202 with the queued execution and never runs the engine', async () => {
+-    authenticate();
+-    mockEnqueueWorkflowExecution.mockResolvedValue({ executionId: "exec-1", status: "queued" });
+-
+-    const response = await POST(makeRequest({ mode: "async" }), ROUTE_PARAMS);
+-    const json = await response.json();
+-
+-    expect(response.status).toBe(202);
+-    expect(json).toEqual({ executionId: "exec-1", status: "queued" });
+-    // The whole point: no synchronous execution happened.
+-    expect(mockExecuteWorkflow).not.toHaveBeenCalled();
+-    expect(mockEnqueueWorkflowExecution).toHaveBeenCalledWith({
+-      userId: "user-1",
+-      workspaceId: "ws-1",
+-      workflowId: "wf-1",
+-    });
+-  });
+-
+-  it("11. the default is still sync: an unchanged body runs the workflow as before", async () => {
+-    authenticate();
+-    mockExecuteWorkflow.mockResolvedValue({
+-      executionId: "exec-2",
+-      status: "success",
+-      result: { items: [{ json: { ok: true } }] },
+-    } as never);
+-
+-    const response = await POST(makeRequest({}), ROUTE_PARAMS);
+-    const json = await response.json();
+-
+-    expect(response.status).toBe(200);
+-    expect(json.status).toBe("success");
+-    expect(mockExecuteWorkflow).toHaveBeenCalledTimes(1);
+-    expect(mockEnqueueWorkflowExecution).not.toHaveBeenCalled();
+-  });
+-
+-  it('12. rejects input together with mode "async" instead of silently dropping it', async () => {
+-    authenticate();
+-
+-    const response = await POST(
+-      makeRequest({ mode: "async", input: { items: [{ json: { a: 1 } }] } }),
+-      ROUTE_PARAMS
+-    );
+-    const json = await response.json();
+-
+-    expect(response.status).toBe(400);
+-    expect(json.error.code).toBe("VALIDATION_ERROR");
+-    expect(mockEnqueueWorkflowExecution).not.toHaveBeenCalled();
+-    expect(mockExecuteWorkflow).not.toHaveBeenCalled();
+-  });
+-
+-  it("13. rejects an unknown mode", async () => {
+-    authenticate();
+-
+-    const response = await POST(makeRequest({ mode: "eventual" }), ROUTE_PARAMS);
+-
+-    expect(response.status).toBe(400);
+-    expect(mockEnqueueWorkflowExecution).not.toHaveBeenCalled();
+-  });
+-
+-  it('14. mode "async" maps a missing workflow to the same 404 the sync branch gives', async () => {
+-    authenticate();
+-    mockEnqueueWorkflowExecution.mockRejectedValue(
+-      new ExecutionEngineError(ExecutionErrorCode.WORKFLOW_NOT_FOUND, "This workflow could not be found")
+-    );
+-
+-    const response = await POST(makeRequest({ mode: "async" }), ROUTE_PARAMS);
+-    const json = await response.json();
+-
+-    expect(response.status).toBe(404);
+-    expect(json.error.code).toBe("WORKFLOW_NOT_FOUND");
+-  });
+-
+-  it('15. mode "async" maps an unexecutable document to 400 with its engine code', async () => {
+-    authenticate();
+-    mockEnqueueWorkflowExecution.mockRejectedValue(
+-      new ExecutionEngineError(ExecutionErrorCode.WORKFLOW_CONTAINS_CYCLE, "Workflow contains a cycle")
+-    );
+-
+-    const response = await POST(makeRequest({ mode: "async" }), ROUTE_PARAMS);
+-    const json = await response.json();
+-
+-    expect(response.status).toBe(400);
+-    expect(json.error.code).toBe("WORKFLOW_CONTAINS_CYCLE");
+-  });
+-
+-  it("16. an unauthenticated async request is rejected before anything is queued", async () => {
+-    mockGetCurrentUser.mockResolvedValue(null as never);
+-
+-    const response = await POST(makeRequest({ mode: "async" }), ROUTE_PARAMS);
+-
+-    expect(response.status).toBe(401);
+-    expect(mockEnqueueWorkflowExecution).not.toHaveBeenCalled();
+-  });
+-
+-  it("17. (Fase 10.5A) an archived workflow is a 409 WORKFLOW_ARCHIVED, on both paths", async () => {
+-    authenticate();
+-    const archived = new ExecutionEngineError(
+-      ExecutionErrorCode.WORKFLOW_ARCHIVED,
+-      "This workflow is archived. Restore it before executing it."
+-    );
+-    mockExecuteWorkflow.mockRejectedValue(archived);
+-    mockEnqueueWorkflowExecution.mockRejectedValue(archived);
+-
+-    for (const body of [{}, { mode: "async" }]) {
+-      const response = await POST(makeRequest(body), ROUTE_PARAMS);
+-      const json = await response.json();
+-      expect(response.status).toBe(409);
+-      expect(json.error.code).toBe("WORKFLOW_ARCHIVED");
+-      expect(json.error.message).toMatch(/Restore it/);
+-    }
+-  });
+-});
+diff -ruN '--exclude=node_modules' '--exclude=.next' '--exclude=.git' '--exclude=*.tsbuildinfo' /tmp/claude-0/-home-claude/e8d0dca0-7f40-5a56-aff6-1d011dfcd9be/scratchpad/base105a/automation-platform/app/api/workflows/[workflowId]/execute/route.ts /home/claude/proj/automation-platform/app/api/workflows/[workflowId]/execute/route.ts
+--- /tmp/claude-0/-home-claude/e8d0dca0-7f40-5a56-aff6-1d011dfcd9be/scratchpad/base105a/automation-platform/app/api/workflows/[workflowId]/execute/route.ts	2026-09-21 16:28:53.000000000 -0300
++++ /home/claude/proj/automation-platform/app/api/workflows/[workflowId]/execute/route.ts	1969-12-31 21:00:00.000000000 -0300
+@@ -1,130 +0,0 @@
+-import { NextRequest, NextResponse } from "next/server";
+-import { getCurrentUser } from "@/lib/auth/session";
+-import { ensureDefaultWorkspace } from "@/lib/auth/actions";
+-import { executeWorkflow } from "@/server/execution/execute-workflow";
+-import { enqueueWorkflowExecution } from "@/server/execution/enqueue-workflow-execution";
+-import { QueueError } from "@/server/execution/execution-queue";
+-import {
+-  validateExecuteWorkflowRequest,
+-  ExecuteRequestValidationError,
+-} from "@/server/execution/validation";
+-import { ExecutionEngineError } from "@/lib/execution/errors";
+-import { apiError } from "@/lib/api-error";
+-
+-interface RouteParams {
+-  params: { workflowId: string };
+-}
+-
+-/**
+- * Two lifecycles behind one endpoint, chosen by the request's `mode`
+- * (default "sync" — see server/execution/validation.ts).
+- *
+- *   mode "sync"  (default, unchanged since Fase 3)
+- *     auth -> workspace -> workflow -> executeWorkflow() -> persistence
+- *     -> 200 { executionId, status, result | error }
+- *
+- *   mode "async" (Fase 4H — the producer side of the queue)
+- *     auth -> workspace -> workflow -> validate -> snapshot
+- *     -> enqueueWorkflowExecution() -> 202 { executionId, status: "queued" }
+- *     Nothing is executed during the request.
+- *
+- * This route touches neither planner, engine nor repository directly: both
+- * branches delegate to a service that enforces workspace membership on
+- * every database call it makes. Duplicating any of that here would be the
+- * "segundo sistema" the task says not to build — and the async branch in
+- * particular must never call processQueuedExecution() as a stand-in for a
+- * real consumer, which would just be the synchronous path wearing a queue
+- * as a costume.
+- *
+- * IMPORTANT, AND NOT HIDDEN: nothing consumes this queue in production
+- * yet. There is no worker process and no deployment that could host one
+- * (the target is serverless), no GET /api/executions/[executionId], and no
+- * polling in the editor. An execution created with mode "async" is
+- * therefore correctly queued and simply waits. That is why "sync" is still
+- * the default and why the editor was not migrated — see the "Consumidor da
+- * fila" section in docs/async-execution.md for exactly what is missing.
+- */
+-export async function POST(request: NextRequest, { params }: RouteParams) {
+-  const user = await getCurrentUser();
+-  if (!user) return apiError("UNAUTHENTICATED", "Not authenticated", 401);
+-
+-  // workspaceId is always derived server-side from the authenticated user —
+-  // never read from the request body, query string, or params. A workflow
+-  // belonging to a different workspace is simply not found (see
+-  // executeWorkflow -> getWorkflowById, which already filters by this
+-  // workspaceId), not distinguished from "doesn't exist" in the response.
+-  const workspaceId = await ensureDefaultWorkspace(user.id, user.email ?? "usuário");
+-
+-  let body: unknown = {};
+-  const rawBody = await request.text();
+-  if (rawBody.length > 0) {
+-    try {
+-      body = JSON.parse(rawBody);
+-    } catch {
+-      return apiError("INVALID_JSON", "Request body must be valid JSON", 400);
+-    }
+-  }
+-
+-  let parsed;
+-  try {
+-    parsed = validateExecuteWorkflowRequest(body);
+-  } catch (err) {
+-    if (err instanceof ExecuteRequestValidationError) {
+-      return apiError("VALIDATION_ERROR", err.message, 400);
+-    }
+-    throw err;
+-  }
+-
+-  try {
+-    if (parsed.mode === "async") {
+-      const queued = await enqueueWorkflowExecution({
+-        userId: user.id,
+-        workspaceId,
+-        workflowId: params.workflowId,
+-      });
+-
+-      // 202 Accepted: the request was accepted for processing and the
+-      // workflow has NOT run. Distinct from the 200 the sync branch
+-      // returns, so a client can tell the two apart from the status line
+-      // alone, without inspecting the body.
+-      return NextResponse.json(queued, { status: 202 });
+-    }
+-
+-    const result = await executeWorkflow({
+-      userId: user.id,
+-      workspaceId,
+-      workflowId: params.workflowId,
+-      input: parsed.input,
+-    });
+-
+-    // The request itself was handled correctly regardless of whether the
+-    // *workflow* ended in success/error/cancelled — that outcome is
+-    // communicated in the response body's `status` field (same convention
+-    // executeWorkflow already returns), not the HTTP status code. Only
+-    // request-level failures (auth, validation, not-found) use non-200s.
+-    return NextResponse.json(result, { status: 200 });
+-  } catch (err) {
+-    if (err instanceof ExecutionEngineError && err.code === "WORKFLOW_NOT_FOUND") {
+-      return apiError("WORKFLOW_NOT_FOUND", "This workflow could not be found", 404);
+-    }
+-    if (err instanceof ExecutionEngineError && err.code === "WORKFLOW_ARCHIVED") {
+-      // Fase 10.5A: the workflow exists but is archived — a state conflict
+-      // the caller can resolve (restore), not a malformed request.
+-      return apiError("WORKFLOW_ARCHIVED", err.message, 409);
+-    }
+-    if (err instanceof QueueError) {
+-      // Reaching this means the row created a moment earlier was already
+-      // not queueable — nothing in the current design can do that, so it
+-      // is a server-side inconsistency, not a client error.
+-      return apiError(err.code, "Unable to queue this execution. Please try again.", 500);
+-    }
+-    if (err instanceof ExecutionEngineError) {
+-      // Any other ExecutionEngineError reaching here is unexpected (the
+-      // service already catches planning/engine errors internally and
+-      // returns them as a normal response) — reuse the same structured
+-      // error shape rather than a generic 500 with no code.
+-      return apiError(err.code, err.message, 400);
+-    }
+-    return apiError("EXECUTION_FAILED", "Unable to execute workflow. Please try again.", 500);
+-  }
+-}
+diff -ruN '--exclude=node_modules' '--exclude=.next' '--exclude=.git' '--exclude=*.tsbuildinfo' /tmp/claude-0/-home-claude/e8d0dca0-7f40-5a56-aff6-1d011dfcd9be/scratchpad/base105a/automation-platform/db/migrations/0008_rls_without_recursion.sql /home/claude/proj/automation-platform/db/migrations/0008_rls_without_recursion.sql
+--- /tmp/claude-0/-home-claude/e8d0dca0-7f40-5a56-aff6-1d011dfcd9be/scratchpad/base105a/automation-platform/db/migrations/0008_rls_without_recursion.sql	1969-12-31 21:00:00.000000000 -0300
++++ /home/claude/proj/automation-platform/db/migrations/0008_rls_without_recursion.sql	2026-09-25 17:06:50.958294812 -0300
+@@ -0,0 +1,94 @@
++-- Débito de infraestrutura (achado na revisão da Fase 10.5A): RLS recursiva.
++-- Nova migration — nenhuma anterior é reescrita.
++--
++-- O PROBLEMA
++-- Toda policy de leitura deste projeto pergunta a mesma coisa — "quem está
++-- lendo é membro deste workspace?" — lendo `workspace_members`. Como
++-- `workspace_members` também tem RLS, e a policy DELA faz essa pergunta
++-- sobre ela mesma (0000), qualquer leitura por um papel sujeito a RLS morre
++-- com:
++--
++--   ERROR: infinite recursion detected in policy for relation "workspace_members"
++--
++-- Isso FECHA em vez de vazar (o erro nega a leitura), e não afeta o produto
++-- hoje: a aplicação conecta pela própria DATABASE_URL, que não passa por
++-- RLS, e a autorização real é `requireWorkspaceMembership` no código. Mas
++-- deixa a barreira de isolamento inútil para qualquer leitura vinda do
++-- cliente Supabase (PostgREST, anon/authenticated) — exatamente a barreira
++-- que precisa existir antes de o produto ficar multi-tenant de verdade.
++--
++-- A CORREÇÃO (a usual no Supabase)
++-- Uma função SECURITY DEFINER responde à pergunta. Ela roda como dona das
++-- tabelas, fora do RLS, então não reentra em policy nenhuma. As policies
++-- passam a chamá-la. O que cada uma PERMITE não muda: leitura para membro
++-- do workspace, e nenhuma policy de escrita — escrita continua sendo só
++-- pela conexão da aplicação, autorizada em código.
++--
++-- A função é segura de expor: ela só responde sobre o usuário que está
++-- chamando (`auth.uid()`), nunca sobre terceiros.
++
++CREATE OR REPLACE FUNCTION "public"."is_workspace_member"("ws" uuid) RETURNS boolean
++LANGUAGE sql
++STABLE
++SECURITY DEFINER
++-- search_path fixo: uma função SECURITY DEFINER sem isto pode ser
++-- sequestrada por um schema temporário do chamador.
++SET search_path = public, pg_temp
++AS $$
++  SELECT EXISTS (
++    SELECT 1 FROM "workspace_members" wm
++    WHERE wm."workspace_id" = "ws" AND wm."user_id" = auth.uid()
++  );
++$$;
++
++COMMENT ON FUNCTION "public"."is_workspace_member"(uuid) IS
++  'RLS: o usuário autenticado é membro deste workspace? SECURITY DEFINER para não reentrar na policy de workspace_members (migration 0008).';
++
++-- ---------------------------------------------------------------------
++-- As mesmas policies de sempre, agora sem recursão. DROP + CREATE porque
++-- PostgreSQL não tem CREATE OR REPLACE POLICY; o nome de cada uma é
++-- mantido, para o diff com as migrations anteriores ser óbvio.
++-- ---------------------------------------------------------------------
++DROP POLICY IF EXISTS "workspaces_select_member" ON "workspaces";
++CREATE POLICY "workspaces_select_member" ON "workspaces"
++  FOR SELECT USING ("public"."is_workspace_member"("id"));
++
++-- Esta é a que causava a recursão: a policy de workspace_members lia
++-- workspace_members.
++DROP POLICY IF EXISTS "workspace_members_select_same_workspace" ON "workspace_members";
++CREATE POLICY "workspace_members_select_same_workspace" ON "workspace_members"
++  FOR SELECT USING ("public"."is_workspace_member"("workspace_id"));
++
++DROP POLICY IF EXISTS "workflows_select_member" ON "workflows";
++CREATE POLICY "workflows_select_member" ON "workflows"
++  FOR SELECT USING ("public"."is_workspace_member"("workspace_id"));
++
++DROP POLICY IF EXISTS "executions_select_member" ON "executions";
++CREATE POLICY "executions_select_member" ON "executions"
++  FOR SELECT USING ("public"."is_workspace_member"("workspace_id"));
++
++-- execution_nodes e effect_attempts não têm workspace_id próprio: continuam
++-- autorizando pela linha dona, que já é restrita acima.
++DROP POLICY IF EXISTS "execution_nodes_select_member" ON "execution_nodes";
++CREATE POLICY "execution_nodes_select_member" ON "execution_nodes"
++  FOR SELECT USING (
++    EXISTS (
++      SELECT 1 FROM "executions" e
++      WHERE e."id" = "execution_nodes"."execution_id"
++        AND "public"."is_workspace_member"(e."workspace_id")
++    )
++  );
++
++DROP POLICY IF EXISTS "effect_operations_select_member" ON "effect_operations";
++CREATE POLICY "effect_operations_select_member" ON "effect_operations"
++  FOR SELECT USING ("public"."is_workspace_member"("workspace_id"));
++
++DROP POLICY IF EXISTS "effect_attempts_select_member" ON "effect_attempts";
++CREATE POLICY "effect_attempts_select_member" ON "effect_attempts"
++  FOR SELECT USING (
++    EXISTS (
++      SELECT 1 FROM "effect_operations" eo
++      WHERE eo."id" = "effect_attempts"."operation_id"
++        AND "public"."is_workspace_member"(eo."workspace_id")
++    )
++  );
+diff -ruN '--exclude=node_modules' '--exclude=.next' '--exclude=.git' '--exclude=*.tsbuildinfo' /tmp/claude-0/-home-claude/e8d0dca0-7f40-5a56-aff6-1d011dfcd9be/scratchpad/base105a/automation-platform/docs/async-execution.md /home/claude/proj/automation-platform/docs/async-execution.md
+--- /tmp/claude-0/-home-claude/e8d0dca0-7f40-5a56-aff6-1d011dfcd9be/scratchpad/base105a/automation-platform/docs/async-execution.md	2026-09-25 16:53:24.000000000 -0300
++++ /home/claude/proj/automation-platform/docs/async-execution.md	2026-09-25 17:09:20.644123188 -0300
+@@ -707,7 +707,10 @@
+ Até aqui, `createQueuedExecution` não tinha nenhum call site de produção. A
+ fila, o claim, o processor, o fencing e o reaper existiam e estavam
+ validados — mas nada da aplicação colocava trabalho na fila. `POST
+-/api/workflows/[workflowId]/execute` executava sempre de forma síncrona.
++/api/workflows/<id>/execute` executava sempre de forma síncrona. (O arquivo
++era `app/api/workflows/[workflowId]/execute/route.ts`; hoje é
++`app/api/workflows/[id]/execute/route.ts` — ver "Dois débitos de
++infraestrutura", no fim deste documento. A URL nunca mudou.)
+ 
+ ### O que passou a existir
+ 
+@@ -1876,7 +1879,8 @@
+   resolve, a outra espera e encontra decidido; um único fato `resolved`), 9a/9b
+   resolução × resposta tardia do provedor nas duas ordens (converge para o
+   fato do provedor) — **14 PASS**.
+-- **Controles negativos no banco:** doze mutações da 0007 (sem o trigger de
++- **Controles negativos no banco:** catorze mutações (doze da 0007, duas da
++  0008) (sem o trigger de
+   inserção, sem o WK002, sem o `FOR SHARE`, sem cada CHECK, a CHECK de
+   evidência sem o `coalesce`, o guard antigo, sem cada um dos dois triggers
+   do item 6, o WK002 contando execução síncrona, e o fato do provedor sem
+@@ -1889,7 +1893,8 @@
+   Next/sessão/repositórios em stub — **34 PASS**, **14/14** mutações
+   detectadas; `effect-repository.ts` e `server/workflows` contra o modelo de
+   tipos do Drizzle — **0 erros**, e **13/13** erros de tipo plantados
+-  acusados.
++  acusados. (Com os dois débitos de infraestrutura corrigidos depois: rotas
++  **42 PASS** com **16/16** mutações, e harness **219 PASS** com a seção 10.)
+ - **Revisão independente** (outro agente, sem ver o raciocínio de quem
+   implementou, com PostgreSQL e sessões concorrentes): as garantias
+   principais aguentaram — arquivar × executar nas duas ordens, duas pessoas
+@@ -1931,16 +1936,48 @@
+   recentes para os mais antigos. Com mais de 200 `unknown` pendentes, os
+   mais antigos só aparecem depois que os mais novos forem resolvidos. Um
+   cursor por `(updated_at, id)` resolve; não entrou nesta fase.
+-- **Pré-existente, não alterado (achado da revisão):** as policies de RLS da
+-  0000 se auto-referenciam, então qualquer leitura por um papel sujeito a
+-  RLS falha com "infinite recursion detected in policy for relation
+-  workspace_members" — fecha, não vaza, e não afeta o produto (o servidor
+-  conecta direto, fora do RLS). A correção usual no Supabase é uma função
+-  `security definer` que responde "é membro deste workspace?" e policies que
+-  a chamam; é mudança de migration própria, fora do escopo desta fase.
+-- **Pré-existente, não alterado:** `app/api/workflows/[id]/` e
+-  `app/api/workflows/[workflowId]/execute/` são segmentos dinâmicos irmãos com
+-  nomes diferentes, o que o Next.js provavelmente recusa no build ("You
+-  cannot use different slug names for the same dynamic path"). Não
+-  verificado aqui (sem `next` instalado). Correção sugerida: mover `execute`
+-  para `[id]/execute` (a URL pública não muda).
++- Os dois achados pré-existentes (slugs irmãos e RLS recursiva) foram
++  corrigidos como infraestrutura, fora da 10.5A — abaixo.
++
++## Dois débitos de infraestrutura (fora da 10.5A)
++
++Nenhum dos dois é da Fase 10.5A; os dois apareceram na revisão dela e foram
++corrigidos em seguida, separados de propósito.
++
++### 1. Segmentos dinâmicos irmãos com nomes diferentes
++
++`app/api/workflows/[id]/` e `app/api/workflows/[workflowId]/execute/`
++descrevem o MESMO segmento dinâmico com dois nomes, o que o Next.js recusa
++no build ("You cannot use different slug names for the same dynamic path") —
++e a 10.5A acrescentou mais rotas sob `[id]`, então ficava pior. O executar
++mudou de arquivo para `app/api/workflows/[id]/execute/route.ts` e
++`params.workflowId` virou `params.id`; **a URL pública é a mesma**
++(`POST /api/workflows/<id>/execute`), o corpo e as respostas também.
++Validado: a rota real, compilada, passa a estar na bateria de rotas
++(`scripts/effects-spec/routes`) — 8 casos novos, incluindo os 409
++`WORKFLOW_ARCHIVED` nos dois modos, o `workspaceId` do corpo sendo ignorado
++e o 202 do assíncrono; duas mutações novas, as duas mortas. (O build do
++Next continua não sendo executável aqui — sem `node_modules`.)
++
++### 2. RLS recursiva (migration `0008_rls_without_recursion.sql`)
++
++Toda policy de leitura pergunta "quem está lendo é membro deste workspace?"
++lendo `workspace_members` — e a policy de `workspace_members` fazia essa
++pergunta sobre ela mesma (0000). Resultado: qualquer leitura por um papel
++sujeito a RLS morria com "infinite recursion detected in policy for relation
++workspace_members". Fechava em vez de vazar, e não afetava o produto (a
++aplicação conecta pela própria `DATABASE_URL`, fora do RLS, e a autorização
++real é `requireWorkspaceMembership`) — mas deixava inútil a barreira que
++precisa existir antes de o produto virar multi-tenant de verdade.
++
++A 0008 cria `public.is_workspace_member(uuid)` — `SECURITY DEFINER`,
++`STABLE`, `search_path` fixo — e reescreve as sete policies de leitura para
++chamá-la. O que cada uma permite não muda, e continua não existindo policy
++de escrita.
++
++Validado na seção 10 do harness, que roda como um papel comum (o
++equivalente ao `authenticated` do Supabase), não como dono das tabelas:
++o membro lê exatamente as linhas do workspace dele nas sete tabelas, quem
++não é membro lê zero, e nenhuma leitura recursa. Dois controles negativos:
++com a policy recursiva de volta, e com a função sem `SECURITY DEFINER` —
++os dois acusam (recursão / estouro de pilha).
+diff -ruN '--exclude=node_modules' '--exclude=.next' '--exclude=.git' '--exclude=*.tsbuildinfo' /tmp/claude-0/-home-claude/e8d0dca0-7f40-5a56-aff6-1d011dfcd9be/scratchpad/base105a/automation-platform/scripts/effects-spec/routes/run.sh /home/claude/proj/automation-platform/scripts/effects-spec/routes/run.sh
+--- /tmp/claude-0/-home-claude/e8d0dca0-7f40-5a56-aff6-1d011dfcd9be/scratchpad/base105a/automation-platform/scripts/effects-spec/routes/run.sh	2026-09-21 20:02:15.000000000 -0300
++++ /home/claude/proj/automation-platform/scripts/effects-spec/routes/run.sh	2026-09-25 17:04:32.518300174 -0300
+@@ -1,7 +1,7 @@
+ #!/usr/bin/env bash
+ # =====================================================================
+ # Fase 10.5A — as ROTAS reais de /api/effects e /api/workflows (arquivar,
+-# restaurar, apagar, editar, listar), compiladas e executadas em Node com
++# restaurar, apagar, editar, listar, executar), compiladas e executadas em Node com
+ # next/server, a sessão e os repositórios trocados por stubs roteirizados.
+ # O que está sob teste é a TRADUÇÃO PARA HTTP: status, código, corpo, e o
+ # que a rota repassa (ou não) ao repositório. O repositório em si é
+@@ -20,8 +20,10 @@
+ REAL=(
+   "app/api/effects/route.ts" "app/api/effects/[operationId]/route.ts" "app/api/effects/[operationId]/resolve/route.ts"
+   "app/api/workflows/[id]/archive/route.ts" "app/api/workflows/[id]/restore/route.ts" "app/api/workflows/[id]/route.ts"
+-  "app/api/workflows/route.ts" "lib/api-error.ts" "server/execution/effects/resolution.ts"
++  "app/api/workflows/route.ts" "app/api/workflows/[id]/execute/route.ts"
++  "lib/api-error.ts" "server/execution/effects/resolution.ts"
+   "server/execution/effects/effect-view.ts" "server/workflows/errors.ts"
++  "server/execution/validation.ts" "lib/execution/types.ts" "lib/execution/errors.ts" "lib/execution/effects.ts"
+ )
+ rm -rf "$WORK"; mkdir -p "$WORK/src/stubs" "$WORK/node_modules"
+ for f in "${REAL[@]}"; do mkdir -p "$WORK/src/$(dirname "$f")"; cp "$ROOT/$f" "$WORK/src/$f"; done
+@@ -37,6 +39,9 @@
+ put workflow-mutations.ts server/workflows/mutations.ts
+ put workflow-queries.ts server/workflows/queries.ts
+ put workflow-validation.ts server/workflows/validation.ts
++put execute-workflow.ts server/execution/execute-workflow.ts
++put enqueue-workflow-execution.ts server/execution/enqueue-workflow-execution.ts
++put execution-queue.ts server/execution/execution-queue.ts
+ ln -sfn "$ZOD_ROOT" "$WORK/node_modules/zod"
+ echo "rotas reais copiadas e conferidas: ${#REAL[@]}"
+ cat > "$WORK/tsconfig.json" <<JSON
+@@ -103,4 +108,6 @@
+   mut "lista de workflows ignora ?archived" "$W/route.js" 'const items = await listWorkflows(user.id, workspaceId, { archived });' 'const items = await listWorkflows(user.id, workspaceId);'
+   mut "resolve sem teto de corpo" "$E/[operationId]/resolve/route.js" 'if (raw.length > MAX_BODY_LENGTH) {' 'if (false) {'
+   mut "arquivar sem checar UUID" "$W/[id]/archive/route.js" 'if (!UUID.test(params.id)) {' 'if (false) {'
++  mut "executar arquivado vira 400" "$W/[id]/execute/route.js" 'return apiError("WORKFLOW_ARCHIVED", err.message, 409);' 'return apiError("WORKFLOW_ARCHIVED", err.message, 400);'
++  mut "execute confia no workspace do corpo" "$W/[id]/execute/route.js" 'workspaceId, workflowId: params.id, input: parsed.input,' 'workspaceId: body?.workspaceId ?? workspaceId, workflowId: params.id, input: parsed.input,'
+ fi
+diff -ruN '--exclude=node_modules' '--exclude=.next' '--exclude=.git' '--exclude=*.tsbuildinfo' /tmp/claude-0/-home-claude/e8d0dca0-7f40-5a56-aff6-1d011dfcd9be/scratchpad/base105a/automation-platform/scripts/effects-spec/routes/spec.mjs /home/claude/proj/automation-platform/scripts/effects-spec/routes/spec.mjs
+--- /tmp/claude-0/-home-claude/e8d0dca0-7f40-5a56-aff6-1d011dfcd9be/scratchpad/base105a/automation-platform/scripts/effects-spec/routes/spec.mjs	2026-09-21 20:02:09.000000000 -0300
++++ /home/claude/proj/automation-platform/scripts/effects-spec/routes/spec.mjs	2026-09-25 17:04:58.804824922 -0300
+@@ -14,6 +14,11 @@
+ import { POST as restoreRoute } from "./out/app/api/workflows/[id]/restore/route.js";
+ import { PATCH as patchWorkflow, DELETE as deleteWorkflowRoute } from "./out/app/api/workflows/[id]/route.js";
+ import { GET as listWorkflowsRoute } from "./out/app/api/workflows/route.js";
++import { POST as executeRoute } from "./out/app/api/workflows/[id]/execute/route.js";
++import * as execSvc from "./out/server/execution/execute-workflow.js";
++import * as enqueueSvc from "./out/server/execution/enqueue-workflow-execution.js";
++import { ExecutionEngineError, ExecutionErrorCode } from "./out/lib/execution/errors.js";
++import { QueueError } from "./out/server/execution/execution-queue.js";
+ 
+ let pass = 0, fail = 0;
+ const check = (label, ok, detail = "") => {
+@@ -175,5 +180,42 @@
+     JSON.stringify(wfQ.calls.map((c) => c.args[2])) === JSON.stringify([{ archived: false }, { archived: true }]));
+ }
+ 
++section("POST /api/workflows/[id]/execute (o mesmo segmento [id] das outras)");
++{
++  login();
++  execSvc.calls.length = 0; enqueueSvc.calls.length = 0;
++  const archived = () => new ExecutionEngineError(ExecutionErrorCode.WORKFLOW_ARCHIVED, "This workflow is archived. Restore it before executing it.");
++  execSvc.script.execute = async () => { throw archived(); };
++  enqueueSvc.script.enqueue = async () => { throw archived(); };
++  const sync = await call(executeRoute, req("/e", {}), { id: WF });
++  const async_ = await call(executeRoute, req("/e", { mode: "async" }), { id: WF });
++  check("R33 executar workflow arquivado: 409 WORKFLOW_ARCHIVED nos dois caminhos",
++    sync.status === 409 && sync.body.error.code === "WORKFLOW_ARCHIVED" && /Restore it/.test(sync.body.error.message)
++    && async_.status === 409 && async_.body.error.code === "WORKFLOW_ARCHIVED");
++  check("R34 ...e o workspace é o da sessão, com o id do caminho",
++    execSvc.calls[0].args[0].workspaceId === "ws-of-user-1" && execSvc.calls[0].args[0].workflowId === WF
++    && enqueueSvc.calls[0].args[0].workspaceId === "ws-of-user-1");
++  execSvc.script.execute = async () => { throw new ExecutionEngineError(ExecutionErrorCode.WORKFLOW_NOT_FOUND, "This workflow could not be found"); };
++  let r = await call(executeRoute, req("/e", { workspaceId: "ws-alheio" }), { id: WF });
++  check("R35 inexistente: 404; workspaceId no corpo é ignorado",
++    r.status === 404 && r.body.error.code === "WORKFLOW_NOT_FOUND" && execSvc.calls.at(-1).args[0].workspaceId === "ws-of-user-1");
++  execSvc.script.execute = async () => ({ executionId: "ex-1", status: "error", error: { code: "EXTERNAL_EFFECT_UNKNOWN", message: "unknown", nodeId: "send" } });
++  r = await call(executeRoute, req("/e", {}), { id: WF });
++  check("R36 execução que termina em erro ainda é 200 (o resultado está no corpo)",
++    r.status === 200 && r.body.status === "error" && r.body.error.code === "EXTERNAL_EFFECT_UNKNOWN");
++  enqueueSvc.script.enqueue = async () => ({ executionId: "ex-2", status: "queued" });
++  r = await call(executeRoute, req("/e", { mode: "async" }), { id: WF });
++  check("R37 async: 202 { executionId, status: queued }", r.status === 202 && r.body.status === "queued");
++  enqueueSvc.script.enqueue = async () => { throw new QueueError("EXECUTION_NOT_QUEUEABLE", "not queueable"); };
++  r = await call(executeRoute, req("/e", { mode: "async" }), { id: WF });
++  check("R38 fila inconsistente: 500 com o código, sem detalhe interno", r.status === 500 && r.body.error.code === "EXECUTION_NOT_QUEUEABLE");
++  r = await call(executeRoute, req("/e", { mode: "outro" }), { id: WF });
++  check("R39 mode desconhecido: 400 VALIDATION_ERROR (validação real)", r.status === 400 && r.body.error.code === "VALIDATION_ERROR");
++  session.user = null;
++  r = await call(executeRoute, req("/e", {}), { id: WF });
++  check("R40 sem sessão: 401", r.status === 401);
++  login();
++}
++
+ console.log(`\n${pass} PASS, ${fail} FAIL`);
+ process.exit(fail === 0 ? 0 : 1);
+diff -ruN '--exclude=node_modules' '--exclude=.next' '--exclude=.git' '--exclude=*.tsbuildinfo' /tmp/claude-0/-home-claude/e8d0dca0-7f40-5a56-aff6-1d011dfcd9be/scratchpad/base105a/automation-platform/scripts/effects-spec/routes/stubs/enqueue-workflow-execution.ts /home/claude/proj/automation-platform/scripts/effects-spec/routes/stubs/enqueue-workflow-execution.ts
+--- /tmp/claude-0/-home-claude/e8d0dca0-7f40-5a56-aff6-1d011dfcd9be/scratchpad/base105a/automation-platform/scripts/effects-spec/routes/stubs/enqueue-workflow-execution.ts	1969-12-31 21:00:00.000000000 -0300
++++ /home/claude/proj/automation-platform/scripts/effects-spec/routes/stubs/enqueue-workflow-execution.ts	2026-09-25 17:04:32.491489299 -0300
+@@ -0,0 +1,8 @@
++export const calls: { fn: string; args: unknown[] }[] = [];
++export const script: { enqueue: () => Promise<{ executionId: string; status: "queued" }> } = {
++  enqueue: async () => ({ executionId: "ex-2", status: "queued" }),
++};
++export async function enqueueWorkflowExecution(input: { userId: string; workspaceId: string; workflowId: string }) {
++  calls.push({ fn: "enqueue", args: [input] });
++  return script.enqueue();
++}
+diff -ruN '--exclude=node_modules' '--exclude=.next' '--exclude=.git' '--exclude=*.tsbuildinfo' /tmp/claude-0/-home-claude/e8d0dca0-7f40-5a56-aff6-1d011dfcd9be/scratchpad/base105a/automation-platform/scripts/effects-spec/routes/stubs/execute-workflow.ts /home/claude/proj/automation-platform/scripts/effects-spec/routes/stubs/execute-workflow.ts
+--- /tmp/claude-0/-home-claude/e8d0dca0-7f40-5a56-aff6-1d011dfcd9be/scratchpad/base105a/automation-platform/scripts/effects-spec/routes/stubs/execute-workflow.ts	1969-12-31 21:00:00.000000000 -0300
++++ /home/claude/proj/automation-platform/scripts/effects-spec/routes/stubs/execute-workflow.ts	2026-09-25 17:04:32.486286581 -0300
+@@ -0,0 +1,14 @@
++// Scripted stand-in for the sync service: records the call, answers what the
++// test scripted. Its own behaviour is covered elsewhere.
++export interface ExecuteWorkflowInput {
++  userId: string;
++  workspaceId: string;
++  workflowId: string;
++  input?: unknown;
++}
++export const calls: { fn: string; args: unknown[] }[] = [];
++export const script: { execute: () => Promise<unknown> } = { execute: async () => ({ executionId: "ex-1", status: "success" }) };
++export async function executeWorkflow(input: ExecuteWorkflowInput) {
++  calls.push({ fn: "execute", args: [input] });
++  return script.execute() as Promise<{ executionId: string; status: "success" | "error" | "cancelled" }>;
++}
+diff -ruN '--exclude=node_modules' '--exclude=.next' '--exclude=.git' '--exclude=*.tsbuildinfo' /tmp/claude-0/-home-claude/e8d0dca0-7f40-5a56-aff6-1d011dfcd9be/scratchpad/base105a/automation-platform/scripts/effects-spec/routes/stubs/execution-queue.ts /home/claude/proj/automation-platform/scripts/effects-spec/routes/stubs/execution-queue.ts
+--- /tmp/claude-0/-home-claude/e8d0dca0-7f40-5a56-aff6-1d011dfcd9be/scratchpad/base105a/automation-platform/scripts/effects-spec/routes/stubs/execution-queue.ts	1969-12-31 21:00:00.000000000 -0300
++++ /home/claude/proj/automation-platform/scripts/effects-spec/routes/stubs/execution-queue.ts	2026-09-25 17:04:32.493552315 -0300
+@@ -0,0 +1,9 @@
++// Only the error type the route catches (the queue itself needs the database).
++export class QueueError extends Error {
++  code: "EXECUTION_NOT_FOUND" | "EXECUTION_NOT_QUEUEABLE";
++  constructor(code: "EXECUTION_NOT_FOUND" | "EXECUTION_NOT_QUEUEABLE", message: string) {
++    super(message);
++    this.name = "QueueError";
++    this.code = code;
++  }
++}
+diff -ruN '--exclude=node_modules' '--exclude=.next' '--exclude=.git' '--exclude=*.tsbuildinfo' /tmp/claude-0/-home-claude/e8d0dca0-7f40-5a56-aff6-1d011dfcd9be/scratchpad/base105a/automation-platform/scripts/f4f-lifecycle-harness.sql /home/claude/proj/automation-platform/scripts/f4f-lifecycle-harness.sql
+--- /tmp/claude-0/-home-claude/e8d0dca0-7f40-5a56-aff6-1d011dfcd9be/scratchpad/base105a/automation-platform/scripts/f4f-lifecycle-harness.sql	2026-09-21 19:55:06.000000000 -0300
++++ /home/claude/proj/automation-platform/scripts/f4f-lifecycle-harness.sql	2026-09-25 17:07:24.654856993 -0300
+@@ -25,6 +25,7 @@
+ --   7    lease / heartbeat (Fase 9)
+ --   8    efeitos externos (Fase 10) — com provedor FALSO; nada sai daqui
+ --   9    arquivar workflow; resolver "unknown" com evidência (Fase 10.5A)
++--   10   RLS sem recursão, lida por um papel comum (migration 0008)
+ --
+ -- COMO LER O RESULTADO
+ -- Todo cenário deve dar PASS.
+@@ -1986,3 +1987,86 @@
+                 'conferi no painel do provedor', 1), 'resolved');
+ RAISE NOTICE '';
+ END $$;
++
++-- =====================================================================
++-- Seção 10 — RLS sem recursão (migration 0008)
++--
++-- As seções acima rodam como dono das tabelas, que não passa por RLS. Esta
++-- roda como um papel COMUM (o equivalente ao `authenticated` do Supabase):
++-- é o único jeito de exercitar as policies. Antes da 0008, qualquer leitura
++-- aqui morria com "infinite recursion detected in policy for relation
++-- workspace_members" — a policy de workspace_members lia workspace_members.
++--
++-- Precisa de permissão para criar papel (o `postgres` do Supabase tem). Sem
++-- ela, a seção é PULADA com um aviso, em vez de dar falso PASS.
++-- =====================================================================
++SELECT h.seed();
++DO $$
++DECLARE usr uuid := (SELECT c.usr FROM h.ctx c); stranger uuid := gen_random_uuid();
++        e uuid; ep int; visivel text; alheio text;
++BEGIN
++RAISE NOTICE '';
++RAISE NOTICE '== 10. RLS sem recursão (0008) ==';
++
++-- fixture: uma linha em cada tabela protegida
++e := h.create_queued(); ep := h.claim(e);
++PERFORM h.eff_attempt(e, 'send', 'lead-rls', 'mock.send_message', 'fp', ep, 'success');
++PERFORM h.insert_nodes(e, ep, 'no');
++PERFORM h.finish(e, 'success', ep);
++
++PERFORM h.check('10.0 a função de pertinência é SECURITY DEFINER e STABLE',
++  (SELECT p.prosecdef::text || '/' || (p.provolatile = 's')::text
++     FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
++    WHERE n.nspname = 'public' AND p.proname = 'is_workspace_member'), 'true/true');
++PERFORM h.check('10.0 ...e search_path fixo (SECURITY DEFINER sem isso é sequestrável)',
++  (SELECT (p.proconfig @> ARRAY['search_path=public, pg_temp'])::text
++     FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
++    WHERE n.nspname = 'public' AND p.proname = 'is_workspace_member'), 'true');
++PERFORM h.check('10.0 toda policy de leitura passa por ela',
++  (SELECT count(*) FILTER (WHERE qual LIKE '%is_workspace_member%') || '/' || count(*) FROM pg_policies
++    WHERE schemaname = 'public' AND tablename IN ('workspaces', 'workspace_members', 'workflows',
++      'executions', 'execution_nodes', 'effect_operations', 'effect_attempts')), '7/7');
++PERFORM h.check('10.0 e continua não existindo policy de escrita',
++  (SELECT count(*)::text FROM pg_policies WHERE schemaname = 'public' AND cmd <> 'SELECT'), '0');
++
++BEGIN
++  CREATE ROLE h_rls_reader NOLOGIN;
++EXCEPTION
++  WHEN duplicate_object THEN NULL;
++  WHEN insufficient_privilege THEN
++    RAISE WARNING 'seção 10 PULADA: sem permissão para criar papel de teste';
++    RETURN;
++END;
++GRANT USAGE ON SCHEMA public, auth TO h_rls_reader;
++GRANT SELECT ON workspaces, workspace_members, workflows, executions, execution_nodes,
++  effect_operations, effect_attempts TO h_rls_reader;
++
++-- lendo como o membro
++PERFORM set_config('request.jwt.claim.sub', usr::text, true);
++PERFORM set_config('role', 'h_rls_reader', true);
++SELECT (SELECT count(*) FROM workspaces) || '/' || (SELECT count(*) FROM workspace_members)
++    || '/' || (SELECT count(*) FROM workflows) || '/' || (SELECT count(*) FROM executions)
++    || '/' || (SELECT count(*) FROM execution_nodes) || '/' || (SELECT count(*) FROM effect_operations)
++    || '/' || (SELECT count(*) FROM effect_attempts) INTO visivel;
++-- e como alguém de fora
++PERFORM set_config('role', 'none', true);
++PERFORM set_config('request.jwt.claim.sub', stranger::text, true);
++PERFORM set_config('role', 'h_rls_reader', true);
++SELECT (SELECT count(*) FROM workspaces) || '/' || (SELECT count(*) FROM workspace_members)
++    || '/' || (SELECT count(*) FROM workflows) || '/' || (SELECT count(*) FROM executions)
++    || '/' || (SELECT count(*) FROM execution_nodes) || '/' || (SELECT count(*) FROM effect_operations)
++    || '/' || (SELECT count(*) FROM effect_attempts) INTO alheio;
++PERFORM set_config('role', 'none', true);
++PERFORM set_config('request.jwt.claim.sub', '', true);
++
++PERFORM h.check('10.1 membro lê (sem recursão): workspace/membros/workflow/execução/nós/operação/histórico',
++  visivel, '1/1/1/1/1/1/3');
++PERFORM h.check('10.2 quem não é membro não lê nada', alheio, '0/0/0/0/0/0/0');
++
++REVOKE ALL ON workspaces, workspace_members, workflows, executions, execution_nodes,
++  effect_operations, effect_attempts FROM h_rls_reader;
++REVOKE ALL ON SCHEMA public, auth FROM h_rls_reader;
++DROP ROLE h_rls_reader;
++
++RAISE NOTICE '';
++END $$;
