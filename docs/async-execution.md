@@ -1981,3 +1981,136 @@ o membro lê exatamente as linhas do workspace dele nas sete tabelas, quem
 não é membro lê zero, e nenhuma leitura recursa. Dois controles negativos:
 com a policy recursiva de volta, e com a função sem `SECURITY DEFINER` —
 os dois acusam (recursão / estouro de pilha).
+
+## Fase 10.5B-1 — contrato do adaptador Mercado Pago (sem chamada real)
+
+Esta etapa entrega **só o contrato**: nenhuma chamada HTTP, nenhuma
+credencial, nenhum executor registrado, nenhuma migration, nenhuma mudança de
+política de entrega (o banco continua aceitando só `at_most_once`). O que
+existe:
+
+- `server/execution/effects/providers/mercadopago/contract.ts` — tipos,
+  constantes e funções puras: request interno → corpo do
+  `POST /v1/payments`; observação da chamada → `ProviderCallOutcome`.
+- `server/execution/effects/providers/mercadopago/capabilities.ts` — o que o
+  Mercado Pago **documenta**, como dado, com a fonte de cada item. Não é
+  política do Engine e **nada fora de `providers/mercadopago/` pode
+  importá-lo** (verificação executável:
+  `scripts/effects-spec/mercadopago/isolation.mjs`).
+- `scripts/effects-spec/mercadopago/` — spec, mutações e isolamento.
+
+### Ficha de integração — Mercado Pago, criar pagamento
+
+Preenchida a partir da documentação **oficial** consultada em 2026-09-25.
+Onde a fonte não diz, está escrito "não documentado na fonte consultada" —
+nada foi inferido. Capacidade documentada **não** é comportamento do Core.
+
+Fontes (todas em `https://www.mercadopago.com.br`):
+
+- **[F1]** Referência "Criar pagamento" — `/developers/pt/reference/online-payments/checkout-api-payments/create-payment/post`
+- **[F2]** Referência "Criar reembolso" — `/developers/pt/reference/online-payments/checkout-api-payments/create-refund/post`
+- **[F3]** Referência "Obter pagamento" — `/developers/pt/reference/online-payments/checkout-api-payments/get-payment/get`
+- **[F4]** Referência "Buscar em pagamentos" — `/developers/pt/reference/online-payments/checkout-api-payments/search-payments/get`
+- **[F5]** Notícia "Idempotency key usage will be mandatory" (04-01-2024) — `/developers/en/news/2023/01/04/Idempotency-key-usage-will-be-mandatory`
+- **[F6]** "Configurar notificações" (Checkout Pro) — `/developers/pt/docs/checkout-pro-preferences/payment-notifications`
+
+| campo | resposta | fonte |
+|---|---|---|
+| operação | `mercadopago.payment.create` — `POST https://api.mercadopago.com/v1/payments` | F1 |
+| `businessKey` | a entidade de negócio cobrada (ex.: id interno do pedido) — nunca e-mail/CPF | decisão local (Fase 10) |
+| idempotência — aceita chave? | **sim**, header `X-Idempotency-Key`, marcado OBRIGATÓRIO | F1, F2 |
+| idempotência — em quais endpoints | `POST /v1/payments` e `POST /v1/payments/{id}/refunds` ("Payments and Refunds API"). Outros endpoints: não documentado na fonte consultada | F1, F2, F5 |
+| idempotência — formato | sugerido "UUID V4 ou strings randômicas"; limite de tamanho/charset: não documentado na fonte consultada | F1 |
+| idempotência — por quanto tempo vale | **não documentado na fonte consultada** | F1, F5 |
+| idempotência — mesma chave reutilizada | "the server can recognize duplicated requests and ensure that only the first one is processed". O que a segunda requisição **recebe de volta** (mesmo corpo? mesmo status?): não documentado na fonte consultada | F5 |
+| idempotência — mesma chave, corpo diferente | **não documentado na fonte consultada** | F1, F5 |
+| idempotência — header ausente | 400, código `4292` "Header X-Idempotency-Key can't be null" | F1 |
+| reconciliação por ID | `GET /v1/payments/{id}` — "Consulte todas as informações de um pagamento através do ID de pagamento" | F3 |
+| reconciliação por `external_reference` | `GET /v1/payments/search`, parâmetro `external_reference`; "retorna os pagamentos efetuados nos últimos doze meses" | F4 |
+| `external_reference` — limites | "no máximo 64 caracteres e deve conter apenas números, letras, hífens (-) e sublinhados (_)" | F1 |
+| confirmação tardia / webhook | sim. O integrador responde 200/201 em **22 s**; sem resposta, há reenvio. Atrasos documentados: 0 min, 15 min, 30 min, 6 h, 48 h, 96 h, 96 h, 96 h; "Após a terceira tentativa, o prazo será prorrogado, mas os envios continuarão acontecendo". **Fim da janela: não documentado.** Tempo até a PRIMEIRA notificação depois de criar o pagamento: não documentado. (A página é da seção Checkout Pro; é a fonte oficial encontrada para o tópico `payment`.) | F6 |
+| o que vira `provider_reference` | só o `id` do pagamento ("Identificador único de pagamento, gerado automaticamente pelo Mercado Pago", tipo Number), gravado como seus dígitos. Nada mais | F1 |
+| estados do pagamento | `pending`, `approved`, `authorized`, `in_process`, `in_mediation`, `rejected`, `cancelled`, `refunded`, `charged_back`; `status_detail` detalha (ex.: `accredited`, `cc_rejected_insufficient_amount`) | F1 |
+| `binary_mode` | "Quando definido como TRUE, os pagamentos só podem ser aprovados ou rejeitados. Caso contrário, eles também podem resultar in_process." Se vale para todo meio de pagamento (ex.: Pix): não documentado na fonte consultada | F1 |
+| status HTTP de sucesso | o texto diz 201; o schema da mesma página lista 200. O contrato aceita os dois e decide pelo **corpo** | F1 |
+| formato do corpo de erro | a referência lista códigos e mensagens (400/401/403), **não** o JSON em volta: **não documentado na fonte consultada** — ver "Decisões" abaixo | F1 |
+| política de retry | `at_most_once` (a única que o banco aceita). A chave do provedor tornaria um reenvio com a MESMA chave seguro dentro das garantias dele — mas a retenção da chave não é documentada, e nada disso foi implementado | 0006 |
+| resolução de `unknown` | procurar por `external_reference` (= chave idempotente da operação) em `GET /v1/payments/search`, ou pelo `id` quando o `reason` o traz. `approved` → `confirmed_sent` com o `id`; `rejected` → `confirmed_rejected`; nada encontrado → `confirmed_not_sent` com o que foi consultado | F3, F4, Fase 10.5A |
+| classificação do efeito | **cobrança**: sair duas vezes é cobrar duas vezes. Gravidade máxima — justifica `at_most_once` e resolução só com evidência | — |
+| confirmação tardia × resfriamento de 600 s | o resfriamento cobre a resposta da CHAMADA. O webhook pode chegar muito depois de 600 s (reenvios por dias). Hoje não há consumidor de webhook: quem resolve **consulta a API**, não espera o webhook | F6 |
+| evidência para resolver | `provider_api` (consulta por id/`external_reference`) ou `provider_dashboard`; anotar id, status e horário — nunca colar corpo, header ou dado do pagador | Fase 10.5A |
+| o que NUNCA entra no registro | `Authorization`/access token, cookie, credencial, qualquer header, o corpo da requisição ou da resposta, `token` do cartão, dados de cartão (`card.*`), e-mail/documento do pagador, texto livre do provedor (`message`, `description` de erro) | contrato |
+
+### O mapeamento (`contract.ts`)
+
+**Request.** `amountCents` (inteiro) → `transaction_amount = centavos/100`;
+`paymentMethodId`, `installments`, `cardToken` (só no corpo do provedor),
+`payerEmail` (só no corpo do provedor), `description`;
+`external_reference` = a **chave idempotente do runner** (64 hex: cabe no
+limite de 64 e no charset documentado) — o pagamento fica localizável pela
+busca sem gravar nada novo; `binary_mode: true` sempre. O payload do efeito
+(o que vira fingerprint) **exclui** o token do cartão e o e-mail. O request é
+validado, nunca normalizado, e o erro nunca ecoa o valor.
+
+**Resposta → `ProviderCallOutcome`.**
+
+| observação | outcome |
+|---|---|
+| 200/201, pagamento legível, `status = approved`, `id` inteiro positivo, `external_reference` igual à enviada | `succeeded` (referência = dígitos do `id`) |
+| 200/201, `status = rejected` com `status_detail`, mesma `external_reference` | `failed`, código `rejected:<status_detail>` |
+| 400 cujo **todo** código de `cause` está na lista de códigos definitivos documentados em F1 | `failed`, código `http_400:<códigos>` |
+| 403 com código documentado (`4`, `3002`, `pa_unauthorized_result_from_policies`) | `failed` |
+| timeout, erro de rede, exceção, corpo ilegível, 5xx | `unknown` |
+| 2xx com `pending`/`in_process`/`authorized`/`in_mediation`/`cancelled`/`refunded`/`charged_back`/outro | `unknown` (o `reason` traz o `id` para reconciliar) |
+| `approved`/`rejected` sem `id` utilizável, com `external_reference` diferente ou ausente; `rejected` sem `status_detail` | `unknown` |
+| 400 com `2004`/`2007` (falha de etapa interna), `6033`, `1000`, código não documentado, códigos misturados, sem `cause` ou forma desconhecida | `unknown` |
+| 401 (documentado sem código), 404, 409, 429, outros | `unknown` |
+
+Nenhum texto do provedor é copiado para o outcome: `message`/`reason` são
+fixos, escritos no contrato; `code` só aceita dígitos ou identificador
+minúsculo; de uma exceção, só o nome da classe.
+
+### Decisões que precisam de revisão antes da 10.5B-2
+
+1. **O que é "sucesso" de `mercadopago.payment.create`.** Hoje: só
+   `approved`. Consequência: Pix e boleto nascem `pending` e **sempre**
+   virariam `unknown` (o nó falha, uma pessoa resolve). A alternativa — "o
+   efeito é *o pagamento existir*", e `pending` conta como `succeeded` — muda
+   o significado do registro e precisa ser decidida, não inferida.
+2. **Formato do corpo de erro** (`cause: [{ code }]`) não está na fonte
+   oficial consultada. O contrato só produz `failed` quando lê exatamente
+   essa forma com códigos documentados; qualquer outra forma vira `unknown`.
+   Confirmar em sandbox na 10.5B-2.
+3. **Chave de 64 hex** como `X-Idempotency-Key`: limite de tamanho do header
+   não documentado. Confirmar em sandbox.
+4. **`binary_mode: true`** para todo meio de pagamento: efeito em Pix não
+   documentado.
+5. **Webhook**: não há consumidor, e a janela de reenvio não tem fim
+   documentado. A retenção de `effect_operations` (Fase 10) depende da janela
+   de reconciliação: a busca por `external_reference` cobre 12 meses.
+6. **Usar a chave do provedor para reenviar** (política além de
+   `at_most_once`): exige saber por quanto tempo o MP honra a chave — não
+   documentado. Fora desta fase.
+
+### Validação desta fase
+
+- `npm install`: **falhou** — não há `npm` nem `node` nesta máquina
+  (`bash: npm: command not found`; PowerShell: "O termo 'npm' não é
+  reconhecido…"). Por isso `npm run typecheck`, `npm run lint` e `npm test`
+  não rodaram, e `run.sh`/`mutate.mjs`/`isolation.mjs` (que exigem node) não
+  foram executados como scripts.
+- Executado no motor JS do navegador embutido (Chrome 152), com TypeScript
+  **5.5.4** (a versão fixada no projeto) carregado do jsDelivr, lendo os
+  arquivos reais do repositório por um servidor local somente leitura:
+  `tsc --strict` + `noUncheckedIndexedAccess` sobre
+  `effects.ts`/`contract.ts`/`capabilities.ts` — **0 erros** (sem
+  `@types/node`, que o contrato não usa), com controle negativo (erro de tipo
+  plantado acusado); a saída não tem import de runtime nem
+  fetch/HTTP/`process.env`; `spec.mjs` contra o `contract.js` emitido —
+  **117 PASS, 0 FAIL**; **22/22** mutações do contrato mortas (21 por
+  asserção, 1 por abortar); isolamento (núcleo `isolation-core.mjs` sobre os
+  148 arquivos de `lib/ server/ app/ components/`): árvore real sem violação,
+  **16/16** imports proibidos plantados acusados, **10/10** falsos positivos
+  (comentário, string, template, regex, outro módulo, import de dentro do
+  adaptador) não acusados, árvore restaurada sem violação. As mutações do
+  isolamento rodaram numa cópia **em memória**; o repositório não foi escrito.
