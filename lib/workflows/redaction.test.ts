@@ -37,6 +37,7 @@ function doc<T extends unknown[]>(...nodes: T) {
 }
 
 // Helper: the tests below reach into an `unknown` return value.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function nodeAt(result: unknown, index: number): any {
   return (result as { nodes: unknown[] }).nodes[index];
 }
@@ -135,6 +136,7 @@ describe("redactWorkflowDocument", () => {
 
     it("shares no reference with the input", () => {
       const original = doc(httpNode({ Authorization: "Bearer segredo" }), setNode({ bookingKey: "LEN-1" }));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const safe = redactWorkflowDocument(original) as any;
 
       expect(safe).not.toBe(original);
