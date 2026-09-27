@@ -36,10 +36,17 @@ function doc<T extends unknown[]>(...nodes: T) {
   return { schemaVersion: 1, nodes, edges: [] as unknown[], settings: { executionMode: "default" } };
 }
 
-// Helper: the tests below reach into an `unknown` return value.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function nodeAt(result: unknown, index: number): any {
-  return (result as { nodes: unknown[] }).nodes[index];
+// The part of a (possibly redacted) node the tests below read.
+interface NodeView {
+  data: { values: Record<string, unknown>; headers: Record<string, unknown> };
+}
+
+// Helper: the tests below reach into an `unknown` return value. A missing
+// node fails loudly here instead of as a TypeError further down.
+function nodeAt(result: unknown, index: number): NodeView {
+  const node = (result as { nodes: NodeView[] }).nodes[index];
+  if (node === undefined) throw new Error(`no node at index ${index}`);
+  return node;
 }
 
 describe("redactWorkflowDocument", () => {
@@ -136,8 +143,9 @@ describe("redactWorkflowDocument", () => {
 
     it("shares no reference with the input", () => {
       const original = doc(httpNode({ Authorization: "Bearer segredo" }), setNode({ bookingKey: "LEN-1" }));
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const safe = redactWorkflowDocument(original) as any;
+      // The safe copy keeps the input's shape (only header VALUES change), so
+      // it is read with the input's own type.
+      const safe = redactWorkflowDocument(original) as typeof original;
 
       expect(safe).not.toBe(original);
       expect(safe.nodes).not.toBe(original.nodes);
