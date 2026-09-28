@@ -9,7 +9,17 @@ import { CURRENT_SCHEMA_VERSION } from "./types";
  * elsewhere in the editor (item 8 do prompt mestre).
  */
 
-export interface WorkflowNodeRFData {
+/**
+ * Precisa ser um `type`, não uma `interface`. `Node<NodeData, NodeType>` do
+ * @xyflow/react restringe `NodeData extends Record<string, unknown>`, e o
+ * TypeScript só concede index signature implícita a alias de tipo objeto —
+ * uma interface não a recebe, e falha a restrição com "Index signature for
+ * type 'string' is missing". É também como a própria biblioteca escreve o
+ * seu `BuiltInNode`. Trocar por `type` mantém os campos exigidos e, ao
+ * contrário de acrescentar `[key: string]: unknown`, não passa a aceitar
+ * qualquer propriedade extra.
+ */
+export type WorkflowNodeRFData = {
   /** The registry node type, e.g. "httpRequest". Distinct from RFNode.type,
    *  which is always "workflowNode" so a single component renders all of
    *  them (see components/workflow/nodes/workflow-node-view.tsx). */
@@ -17,7 +27,7 @@ export interface WorkflowNodeRFData {
   label: string;
   config: Record<string, unknown>;
   disabled?: boolean;
-}
+};
 
 export type WorkflowRFNode = RFNode<WorkflowNodeRFData, "workflowNode">;
 

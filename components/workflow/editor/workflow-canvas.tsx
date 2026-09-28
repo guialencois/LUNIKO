@@ -17,6 +17,7 @@ import "@xyflow/react/dist/style.css";
 import { useWorkflowEditorStore } from "./workflow-editor-store";
 import { WorkflowNodeView } from "../nodes/workflow-node-view";
 import { isRegisteredNodeType } from "@/lib/workflows/registry";
+import type { WorkflowRFNode } from "@/lib/workflows/convert";
 
 const nodeTypes = { workflowNode: WorkflowNodeView };
 
@@ -28,7 +29,13 @@ export function WorkflowCanvas() {
   const selectNode = useWorkflowEditorStore((s) => s.selectNode);
 
   const onNodesChange = useCallback(
-    (changes: NodeChange[]) => {
+    // NodeChange sem parâmetro é NodeChange<Node>, e aí applyNodeChanges
+    // infere NodeType = NodeBase e devolve NodeBase[], que o setNodes do store
+    // (WorkflowRFNode[]) recusa. Dizer o tipo do nó aqui é o que faz a
+    // inferência chegar em WorkflowRFNode — e é também o que a prop
+    // onNodesChange do <ReactFlow> espera, já que nodes={nodes} é
+    // WorkflowRFNode[].
+    (changes: NodeChange<WorkflowRFNode>[]) => {
       const removedIds = changes
         .filter((c) => c.type === "remove")
         .map((c) => (c as { id: string }).id);

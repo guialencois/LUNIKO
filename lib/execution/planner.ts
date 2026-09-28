@@ -42,7 +42,11 @@ export function buildExecutionPlan(workflowId: string, rawDocument: unknown): Ex
   }
 
   const manualTriggers = document.nodes.filter((n) => n.type === "manualTrigger");
-  if (manualTriggers.length !== 1) {
+  // `length !== 1` não estreita `manualTriggers[0]` (noUncheckedIndexedAccess).
+  // Ligar o elemento e testá-lo no mesmo `if` diz a mesma coisa de um jeito
+  // que o compilador acompanha; o segundo termo é redundante por construção.
+  const manualTrigger = manualTriggers[0];
+  if (manualTriggers.length !== 1 || !manualTrigger) {
     throw new ExecutionEngineError(
       ExecutionErrorCode.WORKFLOW_REQUIRES_SINGLE_MANUAL_TRIGGER,
       manualTriggers.length === 0
@@ -71,6 +75,6 @@ export function buildExecutionPlan(workflowId: string, rawDocument: unknown): Ex
     edges,
     entryNodes: graph.entryNodes,
     topologicalOrder: order,
-    manualTriggerNodeId: manualTriggers[0].id,
+    manualTriggerNodeId: manualTrigger.id,
   };
 }

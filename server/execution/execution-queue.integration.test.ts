@@ -38,7 +38,7 @@ describe.skipIf(!hasTestDb)("execution queue (4D, integration)", () => {
       .insert(schema.workspaces)
       .values({ name: "4D Test Workspace" })
       .returning({ id: schema.workspaces.id });
-    workspaceA = wsA.id;
+    workspaceA = wsA!.id;
 
     await db.insert(schema.workspaceMembers).values({
       workspaceId: workspaceA,
@@ -117,6 +117,17 @@ describe.skipIf(!hasTestDb)("execution queue (4D, integration)", () => {
   });
 
   it("6. two concurrent consumers never claim the same execution", async () => {
+    // Esvazia a fila ANTES. `claimNextQueuedExecution` pega a próxima da fila
+    // inteira, não uma das duas criadas aqui — então a asserção lá embaixo
+    // ("os dois claims são exatamente a e b") só é verdadeira se mais nada
+    // estiver enfileirado. Testes anteriores deste mesmo arquivo deixam
+    // execuções para trás; o teste logo abaixo já drena exatamente por isso.
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const sobra = await queue.claimNextQueuedExecution();
+      if (!sobra) break;
+    }
+
     const a = await createQueued();
     const b = await createQueued();
 

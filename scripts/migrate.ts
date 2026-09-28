@@ -9,6 +9,29 @@ import postgres from "postgres";
  *
  * Usage: npm run db:migrate  (requires DATABASE_URL to be set)
  */
+/**
+ * O Next carrega `.env.local` por conta própria; o Node não — e este script
+ * roda por `tsx`, fora do Next. Sem isto, DATABASE_URL nunca chegava aqui e o
+ * passo 3 do README ("preencha o .env.local, depois rode npm run db:migrate")
+ * não podia funcionar: a mensagem "Check your .env file" logo abaixo era
+ * impossível de satisfazer.
+ *
+ * `process.loadEnvFile` é nativo do Node (>= 20.12), então não entra nenhuma
+ * dependência nova. A variável definida no shell tem precedência sobre o
+ * arquivo, e o primeiro arquivo que existir basta — a mesma ordem que o Next
+ * usa. Este script só lê DATABASE_URL.
+ */
+if (process.env.DATABASE_URL === undefined) {
+  for (const file of [".env.local", ".env"]) {
+    try {
+      process.loadEnvFile(file);
+      break;
+    } catch {
+      // arquivo ausente: tenta o próximo e, no fim, segue com o ambiente
+    }
+  }
+}
+
 async function main() {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {

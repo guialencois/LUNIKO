@@ -37,7 +37,7 @@ describe.skipIf(!hasTestDb)("recovery reaper (4F, integration)", () => {
       .insert(schema.workspaces)
       .values({ name: "4F Test Workspace" })
       .returning({ id: schema.workspaces.id });
-    workspaceA = wsA.id;
+    workspaceA = wsA!.id;
 
     await db.insert(schema.workspaceMembers).values({
       workspaceId: workspaceA,
@@ -136,7 +136,14 @@ describe.skipIf(!hasTestDb)("recovery reaper (4F, integration)", () => {
       const created = await createRunning({ leaseExpired: true });
       await db
         .update(schema.executions)
-        .set({ status: terminalStatus, finishedAt: new Date() })
+        // Terminar é também SOLTAR O LEASE. O CHECK
+        // executions_lease_only_while_running_check (migration 0005) admite
+        // lease apenas com runner='worker' E status='running', porque estado
+        // terminal não tem dono — é exatamente o que finishQueuedExecution faz
+        // (`leaseExpiresAt: null`). Este teste simulava o fim mexendo só no
+        // status, e o banco recusava a linha, com razão. O título ainda fala
+        // "by timestamp" porque é anterior ao lease, que veio na Fase 9.
+        .set({ status: terminalStatus, finishedAt: new Date(), leaseExpiresAt: null })
         .where(eq(schema.executions.id, created.id));
 
       const summary = await reaper.recoverStaleExecutions({ maxAttempts: MAX_ATTEMPTS });
@@ -265,14 +272,27 @@ describe.skipIf(!hasTestDb)("recovery reaper (4F, integration)", () => {
     const sync = await repo.createExecution(userA, workspaceA, workflowA, emptyDoc);
     expect(sync.runner).toBe("request");
 
-    // Four sweeps, each with the row backdated past the threshold — the
-    // exact sequence that used to walk it from claimAttempts 0 to
-    // WORKER_CRASHED without any worker involved.
-    for (let i = 0; i < 4; i++) {
+    // Desde a migration 0005 este teste não consegue nem MONTAR o cenário que
+    // guardava — e isso é uma garantia mais forte que a original. O CHECK
+    // executions_lease_only_while_running_check admite lease só com
+    // runner='worker', então uma execução síncrona não pode ter lease; e é por
+    // lease vencido que o reaper procura. O estado perigoso deixou de ser
+    // inalcançável pelo código e passou a ser irrepresentável no banco.
+    let bancoRecusou = false;
+    try {
       await db
         .update(schema.executions)
         .set({ leaseExpiresAt: new Date(Date.now() - 1_000) })
         .where(eq(schema.executions.id, sync.id));
+    } catch {
+      bancoRecusou = true;
+    }
+    expect(bancoRecusou).toBe(true);
+
+    // E, sem lease, nenhuma varredura a enxerga — quatro passagens seguidas,
+    // que era a sequência que antes a levava de claimAttempts 0 até
+    // WORKER_CRASHED sem worker nenhum envolvido.
+    for (let i = 0; i < 4; i++) {
       const summary = await reaper.recoverStaleExecutions({ maxAttempts: MAX_ATTEMPTS });
       expect(summary.decisions.find((d) => d.executionId === sync.id)).toBeUndefined();
     }
@@ -324,17 +344,20 @@ describe.skipIf(!hasTestDb)("recovery reaper (4F, integration)", () => {
       .select({ lease: schema.executions.leaseExpiresAt, attempts: schema.executions.claimAttempts })
       .from(schema.executions)
       .where(eq(schema.executions.id, executionId));
+    // Toda chamada é sobre uma execução que o próprio teste acabou de criar.
+    // Não encontrar a linha é defeito do teste, e tem de falhar aqui com nome
+    // em vez de virar `undefined` nos onze usos espalhados abaixo.
+    if (!row) throw new Error(`leaseOf: execução ${executionId} não encontrada`);
     return row;
   }
 
   it("A. the current owner renews its own lease", async () => {
     const created = await createRunning({ leaseExpired: true });
-    const [claimed] = await db
-      .select({ attempts: schema.executions.claimAttempts })
-      .from(schema.executions)
-      .where(eq(schema.executions.id, created.id));
+    // leaseOf já devolve { lease, attempts } desta mesma linha — é o helper
+    // usado nos outros testes deste arquivo para ler a época.
+    const epoch = (await leaseOf(created.id)).attempts;
 
-    const renewed = await repo.renewExecutionLease(created.id, claimed.attempts);
+    const renewed = await repo.renewExecutionLease(created.id, epoch);
 
     expect(renewed).not.toBeNull();
     expect((await leaseOf(created.id)).lease!.getTime()).toBeGreaterThan(Date.now());

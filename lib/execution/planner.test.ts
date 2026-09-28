@@ -63,9 +63,17 @@ describe("buildExecutionPlan", () => {
       [node("t1", "manualTrigger"), node("t2", "manualTrigger")],
       []
     );
-    expect(() => buildExecutionPlan("wf1", raw)).toThrow(
-      ExecutionErrorCode.WORKFLOW_REQUIRES_SINGLE_MANUAL_TRIGGER
-    );
+    // toThrow(string) compara com a MENSAGEM, e a mensagem aqui é o texto
+    // para humano — o código fica em `.code`. Os dois testes acima deste já
+    // asseguram pelo código; este ficou fora do padrão e por isso falhava.
+    expect(() => buildExecutionPlan("wf1", raw)).toThrow(ExecutionEngineError);
+    try {
+      buildExecutionPlan("wf1", raw);
+    } catch (err) {
+      expect((err as ExecutionEngineError).code).toBe(
+        ExecutionErrorCode.WORKFLOW_REQUIRES_SINGLE_MANUAL_TRIGGER
+      );
+    }
   });
 
   it("rejects a cyclic workflow with WORKFLOW_CONTAINS_CYCLE", () => {

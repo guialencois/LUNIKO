@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { eq } from "drizzle-orm";
+import type { WorkflowDocument } from "@/lib/workflows/types";
 
 /**
  * Integration tests for the bounded worker invocation (Fase 4I) — the
@@ -25,7 +26,7 @@ describe.skipIf(!hasTestDb)("runWorkerInvocation (4I, integration)", () => {
   let userA: string;
   let workflowA: string;
 
-  const validDocument = {
+  const validDocument: WorkflowDocument = {
     schemaVersion: 1,
     nodes: [
       { id: "t", type: "manualTrigger", name: "t", position: { x: 0, y: 0 }, data: {} },
@@ -50,7 +51,7 @@ describe.skipIf(!hasTestDb)("runWorkerInvocation (4I, integration)", () => {
       .insert(schema.workspaces)
       .values({ name: "4I Test Workspace" })
       .returning({ id: schema.workspaces.id });
-    workspaceA = wsA.id;
+    workspaceA = wsA!.id;
 
     await db
       .insert(schema.workspaceMembers)
