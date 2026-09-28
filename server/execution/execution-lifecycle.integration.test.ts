@@ -46,8 +46,8 @@ describe.skipIf(!hasTestDb)("execution lifecycle (4C, integration)", () => {
       .insert(schema.workspaces)
       .values({ name: "4C Test Workspace B" })
       .returning({ id: schema.workspaces.id });
-    workspaceA = wsA.id;
-    workspaceB = wsB.id;
+    workspaceA = wsA!.id;
+    workspaceB = wsB!.id;
 
     await db.insert(schema.workspaceMembers).values([
       { workspaceId: workspaceA, userId: userA, role: "owner" },
@@ -134,13 +134,17 @@ describe.skipIf(!hasTestDb)("execution lifecycle (4C, integration)", () => {
       edges: [],
       settings: { executionMode: "default" },
     });
-    await repo.claimQueuedExecution(created.id);
+    const claimed = await repo.claimQueuedExecution(created.id);
 
     const result = { items: [{ json: { ok: true } }] };
     const finished = await repo.finishQueuedExecution(created.id, {
       status: "success",
       durationMs: 42,
       result,
+      // A época de cerca vem do próprio claim deste teste. Passar um número
+      // inventado (0) casaria com uma execução síncrona, que é exatamente o
+      // que o guard em finishQueuedExecution existe para impedir.
+      expectedClaimAttempts: claimed!.claimAttempts,
     });
 
     expect(finished!.status).toBe("success");
@@ -162,6 +166,7 @@ describe.skipIf(!hasTestDb)("execution lifecycle (4C, integration)", () => {
       status: "success",
       durationMs: 10,
       result: { items: [] },
+      expectedClaimAttempts: claimedSuccess!.claimAttempts,
     });
     expect(finishedSuccess!.status).toBe("success");
 
@@ -171,11 +176,12 @@ describe.skipIf(!hasTestDb)("execution lifecycle (4C, integration)", () => {
       edges: [],
       settings: { executionMode: "default" },
     });
-    await repo.claimQueuedExecution(failed.id);
+    const claimedFailed = await repo.claimQueuedExecution(failed.id);
     const finishedError = await repo.finishQueuedExecution(failed.id, {
       status: "error",
       durationMs: 5,
       error: { code: "NODE_EXECUTION_FAILED", message: "boom", nodeId: "n1" },
+      expectedClaimAttempts: claimedFailed!.claimAttempts,
     });
     expect(finishedError!.status).toBe("error");
     expect(finishedError!.error).toMatchObject({ code: "NODE_EXECUTION_FAILED" });

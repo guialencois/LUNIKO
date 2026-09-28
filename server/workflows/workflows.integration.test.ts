@@ -46,8 +46,8 @@ describe.skipIf(!hasTestDb)("workflow CRUD + workspace authorization (integratio
       .insert(schema.workspaces)
       .values({ name: "Test Workspace B" })
       .returning({ id: schema.workspaces.id });
-    workspaceA = wsA.id;
-    workspaceB = wsB.id;
+    workspaceA = wsA!.id;
+    workspaceB = wsB!.id;
 
     await db.insert(schema.workspaceMembers).values([
       { workspaceId: workspaceA, userId: userA, role: "owner" },

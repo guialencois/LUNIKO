@@ -57,6 +57,13 @@ describe("<ExecutionResultPanel />", () => {
       isPanelOpen: true,
     });
     render(<ExecutionResultPanel />);
-    expect(screen.getByText(/cancelled/i)).toBeInTheDocument();
+    // /cancelled/i casava com TRÊS nós deste mesmo render — o rótulo de
+    // estado, o código do erro e a mensagem —, e `getByText` exige um só.
+    // O nome do teste é "distinctly", então o que interessa é exatamente
+    // cada um desses três, não "existe algo escrito cancelled". Textos
+    // exatos, como o teste 4 acima já faz.
+    expect(screen.getByText("Cancelled")).toBeInTheDocument();
+    expect(screen.getByText("EXECUTION_CANCELLED")).toBeInTheDocument();
+    expect(screen.getByText("Execution was cancelled")).toBeInTheDocument();
   });
 });

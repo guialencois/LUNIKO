@@ -19,6 +19,6 @@ describe("transform executor", () => {
     const input = { items: [{ json: { name: "Jackson" } }] };
     const result = await executor.execute(makeContext({ nodeType: "transform", input }));
     expect(result.output?.items[0]).not.toBe(input.items[0]);
-    expect(result.output?.items[0].json).not.toBe(input.items[0].json);
+    expect(result.output?.items[0]?.json).not.toBe(input.items[0]?.json);
   });
 });

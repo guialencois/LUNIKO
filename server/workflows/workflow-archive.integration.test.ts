@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { eq, inArray } from "drizzle-orm";
+import type { WorkflowDocument } from "@/lib/workflows/types";
 
 /**
  * Integration tests for Fase 10.5A — archiving a workflow instead of
@@ -32,7 +33,7 @@ describe.skipIf(!hasTestDb)("workflow archive (Fase 10.5A, integration)", () => 
   let workspaceA: string;
   let userA: string;
 
-  const validDocument = {
+  const validDocument: WorkflowDocument = {
     schemaVersion: 1,
     nodes: [{ id: "t", type: "manualTrigger", name: "t", position: { x: 0, y: 0 }, data: {} }],
     edges: [],

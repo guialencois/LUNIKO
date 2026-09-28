@@ -1,3 +1,14 @@
+// Popula o registro ANTES de qualquer consulta. Sem esta linha o mapa fica
+// vazio em produção, `getExecutor` não acha nada e TODA execução de workflow
+// morre com NODE_EXECUTOR_NOT_FOUND (ver a busca logo abaixo). Até agora o
+// único lugar do projeto que importava `./executors` era um arquivo de teste,
+// então a suíte unitária passava e o produto estava quebrado.
+//
+// É o mesmo padrão que o registro irmão já usa: lib/workflows/schema.ts faz
+// `import "./definitions"` exatamente por este motivo. Aqui a importação vive
+// no módulo que CONSOME o registro, e não em cada ponto de entrada, para não
+// depender de alguém lembrar de repeti-la num caminho novo.
+import "./executors";
 import { getExecutor } from "./executors/registry";
 import type { EffectRunner } from "./effects";
 import { buildNodeExecutionContext } from "./context";

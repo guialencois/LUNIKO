@@ -37,7 +37,7 @@ describe.skipIf(!hasTestDb)("processQueuedExecution (4E, integration)", () => {
       .insert(schema.workspaces)
       .values({ name: "4E Test Workspace" })
       .returning({ id: schema.workspaces.id });
-    workspaceA = wsA.id;
+    workspaceA = wsA!.id;
 
     await db.insert(schema.workspaceMembers).values({
       workspaceId: workspaceA,
@@ -409,12 +409,13 @@ describe.skipIf(!hasTestDb)("processQueuedExecution (4E, integration)", () => {
 
     // ...and the stored snapshot still is the authored document, so the
     // execution stays reproducible from its own row.
-    const stored = await db
+    const [stored] = await db
       .select({ document: schema.executions.document })
       .from(schema.executions)
       .where(eq(schema.executions.id, created.id));
-    expect(JSON.stringify(stored[0].document)).not.toContain("[REDACTED]");
-    expect(stored[0].document).toEqual(doc);
+    if (!stored) throw new Error("a execução não está no banco");
+    expect(JSON.stringify(stored.document)).not.toContain("[REDACTED]");
+    expect(stored.document).toEqual(doc);
   });
 
   it("gives the worker the real credential and the reader a redacted copy", async () => {
@@ -435,19 +436,26 @@ describe.skipIf(!hasTestDb)("processQueuedExecution (4E, integration)", () => {
     };
     const created = await createQueuedWithDocument(doc);
 
+    // `typeof doc` não serve para ler estes campos: o helper `node()` tipa
+    // `data` como Record<string, unknown>, então `data.headers` sai como
+    // `unknown`. Este é o formato que os asserts abaixo de fato leem.
+    type HttpRequestNodeDoc = {
+      nodes: { data: { url: string; headers: Record<string, string> } }[];
+    };
+
     // MODELO 2, the worker's own read: intact, because it has to be able
     // to actually send that header once httpRequest is implemented.
     const claimed = await repo.claimQueuedExecution(created.id);
-    const claimedDoc = claimed!.document as typeof doc;
-    expect(claimedDoc.nodes[1].data.headers.Authorization).toBe("Bearer sk-live-9f3a2b");
+    const claimedNode = (claimed!.document as HttpRequestNodeDoc).nodes[1];
+    expect(claimedNode?.data.headers.Authorization).toBe("Bearer sk-live-9f3a2b");
 
     // MODELO 1, the read path a human consumes: redacted.
     const read = await repo.getExecutionById(userA, workspaceA, created.id);
-    const readDoc = read!.execution.document as typeof doc;
-    expect(readDoc.nodes[1].data.headers.Authorization).toBe("[REDACTED]");
+    const readNode = (read!.execution.document as HttpRequestNodeDoc).nodes[1];
+    expect(readNode?.data.headers.Authorization).toBe("[REDACTED]");
     // ...but only the credential header, not the rest of the document.
-    expect(readDoc.nodes[1].data.headers["Content-Type"]).toBe("application/json");
-    expect(readDoc.nodes[1].data.url).toBe("https://api.exemplo/reservas");
+    expect(readNode?.data.headers["Content-Type"]).toBe("application/json");
+    expect(readNode?.data.url).toBe("https://api.exemplo/reservas");
   });
 
   // ------------------------------------------------------------------

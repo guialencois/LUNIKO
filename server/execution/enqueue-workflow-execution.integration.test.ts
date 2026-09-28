@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { eq } from "drizzle-orm";
+import type { WorkflowDocument } from "@/lib/workflows/types";
 
 /**
  * Integration tests for the queue PRODUCER (Fase 4H) and for the chain it
@@ -29,7 +30,7 @@ describe.skipIf(!hasTestDb)("enqueueWorkflowExecution (4H, integration)", () => 
   let strangerId: string;
   let workflowA: string;
 
-  const validDocument = {
+  const validDocument: WorkflowDocument = {
     schemaVersion: 1,
     nodes: [
       { id: "t", type: "manualTrigger", name: "t", position: { x: 0, y: 0 }, data: {} },
@@ -56,7 +57,7 @@ describe.skipIf(!hasTestDb)("enqueueWorkflowExecution (4H, integration)", () => 
       .insert(schema.workspaces)
       .values({ name: "4H Test Workspace" })
       .returning({ id: schema.workspaces.id });
-    workspaceA = wsA.id;
+    workspaceA = wsA!.id;
 
     await db.insert(schema.workspaceMembers).values({
       workspaceId: workspaceA,
@@ -98,6 +99,7 @@ describe.skipIf(!hasTestDb)("enqueueWorkflowExecution (4H, integration)", () => 
       .select()
       .from(schema.executions)
       .where(eq(schema.executions.id, queued.executionId));
+    if (!row) throw new Error("a execução enfileirada não está no banco");
 
     expect(row.status).toBe("queued");
     expect(row.runner).toBe("worker"); // the reaper's circuit, not the request's

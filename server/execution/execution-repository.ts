@@ -104,6 +104,17 @@ export async function createExecution(
     })
     .returning();
 
+  // Um INSERT de uma linha com RETURNING devolve exatamente uma linha: ou
+  // insere e devolve, ou lança. Zero linhas aqui é falha de infraestrutura e
+  // tem de aparecer com esse nome, em vez de propagar `undefined`.
+  //
+  // Isto NÃO é o mesmo caso das funções de UPDATE deste arquivo, que
+  // devolvem `?? null` de propósito: lá o WHERE pode legitimamente não casar
+  // (é o guard de cerca), e "nenhuma linha" é uma resposta, não um defeito.
+  if (!execution) {
+    throw new Error("createExecution: o INSERT em executions não devolveu a linha criada");
+  }
+
   return execution;
 }
 
@@ -252,6 +263,17 @@ export async function createQueuedExecution(
       createdBy: userId,
     })
     .returning();
+
+  // Um INSERT de uma linha com RETURNING devolve exatamente uma linha: ou
+  // insere e devolve, ou lança. Zero linhas aqui é falha de infraestrutura e
+  // tem de aparecer com esse nome, em vez de propagar `undefined`.
+  //
+  // Isto NÃO é o mesmo caso das funções de UPDATE deste arquivo, que
+  // devolvem `?? null` de propósito: lá o WHERE pode legitimamente não casar
+  // (é o guard de cerca), e "nenhuma linha" é uma resposta, não um defeito.
+  if (!execution) {
+    throw new Error("createQueuedExecution: o INSERT em executions não devolveu a linha criada");
+  }
 
   return execution;
 }

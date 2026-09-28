@@ -233,7 +233,9 @@ describe("useExecutionStore — asynchronous path (4I)", () => {
     const promise = useExecutionStore.getState().executeAsync("wf-1");
     await vi.waitFor(() => expect(useExecutionStore.getState().status).toBe("queued"));
 
-    const [, init] = fetchMock.mock.calls[0];
+    const firstCall = fetchMock.mock.calls[0];
+    if (!firstCall) throw new Error("fetch não foi chamado");
+    const [, init] = firstCall;
     expect(JSON.parse(String(init?.body))).toEqual({ mode: "async" });
     expect(useExecutionStore.getState().isPanelOpen).toBe(true);
 
@@ -276,7 +278,10 @@ describe("useExecutionStore — asynchronous path (4I)", () => {
   });
 
   it("19. leaves the synchronous path completely unchanged", async () => {
-    const fetchMock = vi.fn(async () =>
+    // A assinatura importa: sem os parâmetros, mock.calls[0] é a tupla vazia
+    // e os asserts de url/body abaixo não têm o que ler. Mesmo formato do
+    // stubAsyncFetch acima.
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) =>
       jsonResponse(
         { executionId: "exec-sync", status: "success", result: { items: [{ json: {} }] } },
         200,
@@ -289,7 +294,9 @@ describe("useExecutionStore — asynchronous path (4I)", () => {
 
     // One request, no mode field, no polling.
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchMock.mock.calls[0];
+    const firstCall = fetchMock.mock.calls[0];
+    if (!firstCall) throw new Error("fetch não foi chamado");
+    const [url, init] = firstCall;
     expect(String(url)).toBe("/api/workflows/wf-1/execute");
     expect(JSON.parse(String(init?.body))).toEqual({});
     expect(useExecutionStore.getState().status).toBe("success");

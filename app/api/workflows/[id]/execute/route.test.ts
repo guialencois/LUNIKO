@@ -90,7 +90,9 @@ describe("POST /api/workflows/[id]/execute", () => {
     const json = await response.json();
 
     expect(response.status).toBe(404);
-    const callArgs = mockExecuteWorkflow.mock.calls[0][0];
+    const firstCall = mockExecuteWorkflow.mock.calls[0];
+    if (!firstCall) throw new Error("executeWorkflow não foi chamado");
+    const callArgs = firstCall[0];
     expect(callArgs.workspaceId).toBe("ws-1"); // never "someone-elses-workspace"
     expect(json.error.code).toBe("WORKFLOW_NOT_FOUND");
   });

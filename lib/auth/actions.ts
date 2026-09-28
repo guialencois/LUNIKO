@@ -25,8 +25,13 @@ export async function ensureDefaultWorkspace(userId: string, userEmail: string) 
     .where(eq(workspaceMembers.userId, userId))
     .limit(1);
 
-  if (existing.length > 0) {
-    return existing[0].workspaceId;
+  // `existing.length > 0` não estreita `existing[0]`: com
+  // noUncheckedIndexedAccess o acesso por índice é sempre `T | undefined`.
+  // Ler a linha numa constante e testá-la é o que o compilador entende, e
+  // diz a mesma coisa.
+  const membership = existing[0];
+  if (membership) {
+    return membership.workspaceId;
   }
 
   return db.transaction(async (tx) => {
@@ -34,6 +39,16 @@ export async function ensureDefaultWorkspace(userId: string, userEmail: string) 
       .insert(workspaces)
       .values({ name: `Workspace de ${userEmail}` })
       .returning({ id: workspaces.id });
+
+    // `returning()` devolve uma linha por linha inserida, então um INSERT de
+    // uma única linha não devolver nada é impossível. Se acontecer, é falha
+    // de infraestrutura e tem de aparecer com esse nome — não como um
+    // TypeError em `workspace.id` duas linhas abaixo.
+    if (!workspace) {
+      throw new Error(
+        "ensureDefaultWorkspace: o INSERT em workspaces não devolveu a linha criada"
+      );
+    }
 
     await tx.insert(workspaceMembers).values({
       workspaceId: workspace.id,
