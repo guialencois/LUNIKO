@@ -1,0 +1,61 @@
+name: CI
+
+# Roda em todo Pull Request e em todo push na main. O objetivo é simples: a
+# prova de que typecheck, lint, testes e build passaram tem que estar na
+# própria página do PR, e não na palavra de quem abriu.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  verificacao:
+    name: typecheck, lint, testes e build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Mesma versão declarada em engines no package.json e configurada
+          # no projeto da Vercel. Se as três divergirem, o CI passa a testar
+          # um ambiente que não é o de produção.
+          node-version: 24
+          cache: npm
+
+      # `npm ci` e não `npm install`: instala exatamente o package-lock.json e
+      # falha se o lock divergir do package.json, em vez de reescrever o lock
+      # silenciosamente. É o mesmo comando que o vercel.json usa.
+      - run: npm ci
+
+      # A ordem é do mais barato para o mais caro, para falhar cedo.
+      - run: npm run typecheck
+
+      - run: npm run lint
+
+      # Os testes de integração se autopulam sem TEST_DATABASE_URL — é o que
+      # os `describe.skipIf(!hasTestDb)` fazem. Aqui rodam os unitários; os de
+      # integração continuam sendo executados contra um Postgres real antes de
+      # cada entrega. Não defina TEST_DATABASE_URL aqui apontando para o banco
+      # de produção: a suíte cria e apaga dados.
+      - run: npm test
+
+      # O build precisa das variáveis porque lib/env.ts valida o ambiente no
+      # carregamento do módulo, e o `next build` carrega as rotas para gerar as
+      # páginas. Sem elas o build morre em /api/health — foi exatamente assim
+      # que os nove primeiros deploys deste projeto falharam.
+      #
+      # Todos os valores abaixo são FALSOS e existem só para satisfazer o
+      # formato que o zod exige (URL válida, tamanho mínimo). Nenhum segredo
+      # real entra aqui: este arquivo é público no repositório. Se um dia o CI
+      # precisar de um valor de verdade, ele vai em Settings > Secrets do
+      # GitHub e é referenciado como ${{ secrets.NOME }}.
+      - run: npm run build
+        env:
+          NEXT_PUBLIC_APP_URL: http://localhost:3000
+          NEXT_PUBLIC_SUPABASE_URL: http://localhost:54321
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: valor-falso-de-ci
+          SUPABASE_SERVICE_ROLE_KEY: valor-falso-de-ci
+          DATABASE_URL: postgres://usuario:senha@localhost:5432/banco_de_ci
+          ENCRYPTION_KEY: chave-falsa-de-ci-com-mais-de-32-caracteres
