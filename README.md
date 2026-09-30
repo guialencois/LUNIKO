@@ -1,95 +1,182 @@
-# Automation Platform — Fase 1
+# LUNIKO — plataforma de automação
 
-Fundação do produto: Next.js + TypeScript + Tailwind + Supabase (Auth/Postgres) + Drizzle ORM.
+Plataforma interna de automação visual, no estilo do n8n: o usuário monta um workflow
+arrastando nós num canvas, e o sistema executa — de forma síncrona, ou por uma fila com
+worker, lease e recuperação de falhas.
 
-**Escopo desta fase:** autenticação, workspace básico, proteção de rotas, dashboard inicial.
-Nada de workflow editor, engine, filas, webhooks ou credentials ainda — isso vem nas fases seguintes,
-com autorização explícita antes de cada uma.
+Next.js 14 (App Router) · TypeScript estrito · Tailwind · Supabase (Auth + Postgres) ·
+Drizzle ORM · hospedado na Vercel.
+
+## Estado atual
+
+Medido em 29/09/2026 rodando os comandos, não estimado:
+
+| Verificação | Resultado |
+| --- | --- |
+| `npm run typecheck` | 0 erros |
+| `npm run lint` | sem avisos (cobre `app/`, `components/`, `lib/`, `server/`, `scripts/`) |
+| `npm run build` | compila, 13 páginas |
+| `npm test` sem banco de teste | 158 passam, 117 se autopulam |
+| `npm test` com banco de teste | 271 passam, 4 estouram o tempo (ver abaixo) |
+| Produção | no ar |
+
+As 4 falhas **não são defeito de lógica** — nenhuma asserção falhou na suíte inteira. São
+testes de integração que ultrapassam os 30s quando o banco de teste está numa região
+distante. Detalhes em "Testes de integração".
+
+### O que existe e funciona
+
+Autenticação e workspaces com RLS. Editor visual de workflows (React Flow). Motor de
+execução com registro de nós. Execução síncrona e assíncrona. Fila baseada em Postgres
+(`FOR UPDATE SKIP LOCKED`) com claim atômico, lease, heartbeat e reaper de recuperação.
+Protocolo de efeitos externos em três transações, com chave de idempotência e fencing por
+época. Arquivamento de workflows. Contrato do adaptador Mercado Pago.
+
+### O que ainda não existe
+
+- **O agendador não está ligado.** `db/supabase/cron-jobs.sql` existe, mas não foi aplicado
+  e a extensão `pg_cron` não está habilitada no projeto Supabase. Sem isso a fila nunca é
+  consumida sozinha: execuções assíncronas ficam enfileiradas até alguém chamar o endpoint
+  do worker à mão.
+- **Triggers de webhook e de agenda** são stubs — ver
+  `lib/execution/executors/triggers-not-implemented.ts`.
+- **Credentials e criptografia.** `ENCRYPTION_KEY` é validada no carregamento do ambiente,
+  mas ainda não é usada por nada. É intencional: evita reconfigurar tudo depois.
+- **A chamada real ao Mercado Pago** (fase 10.5B-2). Só o contrato existe hoje.
 
 ## Pré-requisitos
 
-- Node.js >= 18.18
-- Uma conta/projeto no [Supabase](https://supabase.com)
+- Node.js **24.x** (declarado em `engines`, e é a versão usada na Vercel e no CI)
+- Um projeto no [Supabase](https://supabase.com)
 
 ## Configuração
 
 1. Instale as dependências:
 
    ```bash
-   npm install
+   npm ci
    ```
 
-2. Copie `.env.example` para `.env.local` e preencha os valores (instruções de onde
-   encontrar cada um estão nos comentários do próprio arquivo):
+   `npm ci` e não `npm install`: instala exatamente o `package-lock.json` e falha se ele
+   divergir do `package.json`.
 
-   ```bash
-   cp .env.example .env.local
-   ```
+2. Crie um `.env.local` na raiz com as variáveis abaixo.
 
-3. Aplique a migration inicial (cria `workspaces` e `workspace_members`, com RLS):
+3. Aplique as migrações:
 
    ```bash
    npm run db:migrate
    ```
 
-4. Rode o servidor de desenvolvimento:
+   O script lê `DATABASE_URL` do ambiente e, se não achar, carrega o `.env.local` sozinho.
+
+4. Suba o servidor:
 
    ```bash
    npm run dev
    ```
 
-5. Acesse `http://localhost:3000` — deve redirecionar para `/login`. Crie uma conta em
-   `/register`, confirme o e-mail (Supabase envia o link), faça login e você deve cair em
-   `/dashboard` com um workspace criado automaticamente.
+5. Abra `http://localhost:3000` — deve redirecionar para `/login`. Crie uma conta em
+   `/register`, confirme o e-mail e você cai em `/dashboard` com um workspace criado.
+
+## Variáveis de ambiente
+
+`lib/env.ts` valida todas no carregamento do módulo. Faltando uma obrigatória, o `next build`
+falha em `/api/health` — não é um erro misterioso, é a validação funcionando.
+
+| Variável | Obrigatória | Onde obter |
+| --- | --- | --- |
+| `NEXT_PUBLIC_APP_URL` | sim | a URL onde o app roda (`http://localhost:3000` em dev) |
+| `NEXT_PUBLIC_SUPABASE_URL` | sim | Supabase → Project Settings → API → Project URL |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | sim | mesma página, chave `anon` / `public` |
+| `SUPABASE_SERVICE_ROLE_KEY` | sim | mesma página, chave `service_role` — **secreta** |
+| `DATABASE_URL` | sim | Supabase → Connect → **Transaction pooler, porta 6543** |
+| `ENCRYPTION_KEY` | sim | gere uma, mínimo 32 caracteres |
+| `CRON_SECRET` | não | segredo compartilhado com o agendador, mínimo 32 caracteres |
+
+Sobre a `CRON_SECRET`: os endpoints internos (`/api/internal/worker` e `/api/internal/reaper`)
+**falham fechados**. Sem ela eles recusam toda requisição em vez de rodar sem autenticação.
+Isso é seguro, mas tem uma consequência prática: **o app sobe normalmente e a execução
+assíncrona simplesmente nunca acontece, sem erro visível.**
+
+Sobre a `DATABASE_URL`: use o **transaction pooler (6543)** em produção —
+`lib/db/index.ts` passa `prepare: false` exatamente por isso, porque esse modo não suporta
+prepared statements. A conexão direta (`db.<ref>.supabase.co`) só responde em IPv6.
 
 ## Comandos
 
-| Comando              | O que faz                                              |
-| --------------------- | ------------------------------------------------------- |
-| `npm run dev`         | Servidor de desenvolvimento                              |
-| `npm run build`       | Build de produção                                        |
-| `npm run lint`        | ESLint                                                   |
-| `npm run typecheck`   | `tsc --noEmit`                                           |
-| `npm test`            | Testes unitários (Vitest)                                |
-| `npm run db:generate` | Gera uma nova migration a partir do schema Drizzle       |
-| `npm run db:migrate`  | Aplica migrations pendentes em `db/migrations/`          |
-| `npm run db:studio`   | Abre o Drizzle Studio para inspecionar o banco           |
+| Comando | O que faz |
+| --- | --- |
+| `npm run dev` | Servidor de desenvolvimento |
+| `npm run build` | Build de produção |
+| `npm run lint` | ESLint |
+| `npm run typecheck` | `tsc --noEmit` |
+| `npm test` | Testes (integração se autopula sem `TEST_DATABASE_URL`) |
+| `npm run db:generate` | Gera migração a partir do schema Drizzle |
+| `npm run db:migrate` | Aplica as migrações pendentes de `db/migrations/` |
+| `npm run db:studio` | Drizzle Studio |
 
-## Verificação (importante)
+## Testes de integração
 
-Este código foi escrito e revisado manualmente, mas **não pôde ser executado** no ambiente em
-que foi gerado (sem acesso à internet para instalar as dependências do npm). Antes de considerar
-a Fase 1 concluída, rode localmente e resolva o que aparecer:
+`npm test` roda os 275 testes, mas os 117 de integração **se autopulam** quando
+`TEST_DATABASE_URL` não está definida — é o que fazem os `describe.skipIf(!hasTestDb)`. Sem a
+variável você vê `158 passed | 117 skipped`, e isso é o comportamento correto, não uma
+regressão.
 
-```bash
-npm install
-npm run lint
-npm run typecheck
-npm test
-npm run build
-```
+Para rodar os 275 é preciso um **banco Postgres separado**.
 
-Pontos que merecem atenção especial na primeira execução:
-- Versões exatas de `@supabase/ssr`/`@supabase/supabase-js` podem ter pequenas mudanças de API;
-  se o `typecheck` reclamar de `cookies()` ou dos tipos do `CookieOptions`, ajuste conforme a
-  versão instalada.
-- `ENCRYPTION_KEY` é validado no schema de env mesmo não sendo usado ainda nesta fase — isso é
-  intencional (evita re-configurar tudo na Fase 6), mas exige um valor de pelo menos 32
-  caracteres em `.env.local` já agora.
+> **Nunca aponte `TEST_DATABASE_URL` para o banco de produção.** A suíte cria e apaga dados
+> de verdade: workspaces, workflows, execuções e efeitos.
 
-## Segurança já aplicada nesta fase
+Preparação, uma vez só:
 
-- Nenhuma secret (`SUPABASE_SERVICE_ROLE_KEY`, `DATABASE_URL`, `ENCRYPTION_KEY`) é exposta com
-  prefixo `NEXT_PUBLIC_`.
-- Row Level Security habilitada em `workspaces` e `workspace_members` (ver
-  `db/migrations/0000_init.sql`): um usuário só vê workspaces dos quais é membro.
-- `middleware.ts` bloqueia `/dashboard/*` para usuários não autenticados e redireciona usuários
-  já autenticados para fora das páginas de login/registro.
-- `lib/auth/session.ts` centraliza a checagem de autorização (`requireWorkspaceMembership`) —
-  nenhuma query a recursos de um workspace deve pular essa checagem nas fases futuras.
+1. Crie um projeto Supabase novo **na mesma região da produção** (hoje `us-east-2`), ou suba
+   um Postgres local. A latência domina o tempo da suíte: de uma região distante ela levou
+   17 minutos e 4 testes estouraram os 30s; local, roda em cerca de um minuto.
 
-## O que NÃO está implementado (de propósito)
+2. Aplique o esquema nesse banco:
 
-Workflow editor (React Flow), workflow engine, Redis/filas, worker, webhooks, scheduler,
-credentials/encryption, node registry. Ver o prompt mestre do produto para o roadmap completo
-por fase.
+   ```bash
+   DATABASE_URL="<string do banco de teste>" npm run db:migrate
+   ```
+
+   No PowerShell, em duas linhas: `$env:DATABASE_URL = "..."` e depois `npm run db:migrate`.
+
+3. Rode a suíte completa:
+
+   ```bash
+   TEST_DATABASE_URL="<a mesma string>" npm test
+   ```
+
+Detalhes que já custaram tempo a quem veio antes:
+
+- Os arquivos rodam **um por vez** (`fileParallelism: false`). Todos compartilham o mesmo
+  banco, e o reaper de um arquivo varre as execuções de outro. Não é defeito do produto — é a
+  suíte, escrita supondo um banco exclusivo, rodando contra um banco compartilhado.
+- O `afterAll` **não consegue** apagar o workspace depois que existem `effect_operations`,
+  por causa do `ON DELETE RESTRICT`. Sobra lixo no banco de teste a cada execução. Não afeta
+  o resultado, mas acumula.
+- Use o **session pooler (porta 5432)** para os testes, não o transaction pooler.
+
+## Segurança
+
+- Nenhuma secret (`SUPABASE_SERVICE_ROLE_KEY`, `DATABASE_URL`, `ENCRYPTION_KEY`,
+  `CRON_SECRET`) usa o prefixo `NEXT_PUBLIC_`. Só o que tem esse prefixo vai para o
+  JavaScript do navegador.
+- RLS habilitada em todas as tabelas do schema `public`, inclusive na `_migrations`.
+  `db/migrations/0008_rls_without_recursion.sql` usa a função `is_workspace_member`
+  (SECURITY DEFINER) para evitar recursão nas políticas.
+- `middleware.ts` bloqueia `/dashboard/*` para quem não está autenticado.
+- `lib/auth/session.ts` centraliza a autorização (`requireWorkspaceMembership`). Nenhuma
+  query a recurso de workspace deve pular essa checagem.
+- `lib/workflows/redaction.ts` remove valores cujo nome de campo pareça credencial
+  (`token`, `password`, `secret`, `key`, `authorization`, `cookie`, `credential`) antes de
+  qualquer coisa ser gravada ou logada.
+- Os endpoints internos exigem `Authorization: Bearer <CRON_SECRET>` e falham fechados.
+
+## Integração contínua
+
+`.github/workflows/ci.yml` roda `npm ci`, typecheck, lint, testes e build a cada Pull Request
+e a cada push na `main`. Os testes de integração se autopulam lá, porque o CI não tem banco —
+o que significa que **o CI cobre os 158 unitários, não os 275**. Rodar os 275 continua sendo
+um passo manual antes de entregar.

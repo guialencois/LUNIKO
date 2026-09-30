@@ -48,6 +48,24 @@ async function main() {
     )
   `;
 
+  /**
+   * Esta tabela não nasce de nenhuma migração, então nada mais liga RLS nela.
+   * Sem esta linha ela fica legível por qualquer role — e num projeto Supabase
+   * o schema `public` é publicado pela API REST, então "qualquer role" inclui
+   * quem tiver a chave anon. Foi exatamente esse o alerta crítico que o
+   * Supabase levantou no banco de produção em 28/09.
+   *
+   * Um projeto Supabase criado a partir de ~setembro/2026 tem um event trigger
+   * `ensure_rls` que liga sozinho — foi assim que o banco de teste ganhou RLS
+   * nesta tabela sem ninguém pedir. Um projeto mais antigo, ou um Postgres
+   * comum, não tem. Não dá para a segurança depender da idade do projeto.
+   *
+   * Sem nenhuma política, RLS ligado significa acesso zero para roles comuns.
+   * Este script conecta como `postgres`, que ignora RLS, então a migração
+   * continua funcionando normalmente.
+   */
+  await sql`ALTER TABLE "_migrations" ENABLE ROW LEVEL SECURITY`;
+
   const migrationsDir = join(process.cwd(), "db", "migrations");
   const files = readdirSync(migrationsDir)
     .filter((f) => f.endsWith(".sql"))
