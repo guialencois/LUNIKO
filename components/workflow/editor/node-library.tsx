@@ -3,6 +3,27 @@
 import { useMemo, useState } from "react";
 import { Search } from "lucide-react";
 import { Input } from "@/components/ui/input";
+/**
+ * Import de efeito colateral: popula o registro de nodes ANTES de qualquer
+ * leitura. Sem esta linha o `Map` de lib/workflows/registry.ts fica vazio NO
+ * NAVEGADOR, `getAllNodeDefinitions()` devolve [] e esta lateral renderiza
+ * "Nenhum node encontrado" — que foi exatamente o defeito relatado.
+ *
+ * O registro e um `Map` de modulo, entao existe UMA INSTANCIA POR RUNTIME. O
+ * lado servidor ja estava correto: lib/workflows/schema.ts faz este mesmo
+ * import na linha 2, e o server component do editor carrega o schema. Mas o
+ * bundle do cliente e outro grafo de modulos, com outro `Map`, e nenhum
+ * componente cliente alcancava as definicoes.
+ *
+ * Fica aqui, e nao no ponto de entrada do editor, para que esta lateral seja
+ * autossuficiente: ela e o unico consumidor que precisa do registro INTEIRO,
+ * e assim pode ser testada sozinha, sem que o teste precise importar as
+ * definicoes por fora (o que mascararia o defeito). Como workflow-editor.tsx
+ * importa este arquivo, os outros consumidores do cliente
+ * (workflow-canvas, node-properties-panel, workflow-node-view) ficam cobertos
+ * pelo mesmo import.
+ */
+import "@/lib/workflows/definitions";
 import { getAllNodeDefinitions } from "@/lib/workflows/registry";
 import { getNodeIcon } from "../nodes/node-icon-map";
 import type { NodeCategory } from "@/lib/workflows/types";
