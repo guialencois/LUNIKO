@@ -9,7 +9,13 @@ import {
   renewExecutionLease,
   HEARTBEAT_INTERVAL_MS,
 } from "./execution-repository";
-import type { ExecutionError, ExecutionLogger, NodeOutput } from "@/lib/execution/types";
+import type {
+  ExecutionError,
+  ExecutionLogger,
+  NodeInput,
+  NodeOutput,
+  PlanTrigger,
+} from "@/lib/execution/types";
 import type { ExecutionRow } from "@/lib/db/schema";
 import { createEffectRunner } from "./effects/effect-runner";
 
@@ -201,15 +207,20 @@ export async function processClaimedExecution(
     | null = null;
 
   try {
-    const plan = buildExecutionPlan(claimed.workflowId, claimed.document);
+    const plan = buildExecutionPlan(
+      claimed.workflowId,
+      claimed.document,
+      planTriggerFromRow(claimed)
+    );
     outcome = await runExecutionPlan(plan, {
       executionId,
       workflowId: claimed.workflowId,
       workspaceId: claimed.workspaceId,
       // No input travels through the queue (docs/async-execution.md: the
-      // job is only {executionId}) — same default the synchronous path
-      // uses when the caller didn't supply one.
-      initialInput: defaultInitialInput(),
+      // job is only {executionId}). A webhook's input was persisted ON THE
+      // ROW when it arrived (Fase 5A, trigger_payload) and is read from
+      // there; a manual run gets the same default as the synchronous path.
+      initialInput: initialInputFromRow(claimed),
       logger,
       signal: options.signal,
       // Fase 10: the epoch identifies THIS attempt, and the effect runner is
@@ -311,4 +322,32 @@ export async function processClaimedExecution(
   // "error" or "cancelled" — never silently upgraded to "success" (item 4:
   // a cancelled or failed run must be reported as such, not masked).
   return { executionId, status: result.status, error: result.error };
+}
+
+/** Fase 5A: which trigger this row starts from. Everything comes from the
+ *  row itself — never from the request that woke the worker. */
+export function planTriggerFromRow(
+  row: Pick<ExecutionRow, "triggerType" | "triggerNodeId">
+): PlanTrigger {
+  if (row.triggerType === "webhook") {
+    if (!row.triggerNodeId) {
+      // The database refuses this shape (executions_webhook_shape_check),
+      // so reaching it means the row was written outside the schema.
+      throw new ExecutionEngineError(
+        ExecutionErrorCode.WORKFLOW_TRIGGER_NOT_FOUND,
+        "Webhook execution has no trigger_node_id"
+      );
+    }
+    return { type: "webhook", nodeId: row.triggerNodeId };
+  }
+  return { type: "manual" };
+}
+
+/** Fase 5A: the persisted trigger input, or the default single empty item. */
+export function initialInputFromRow(row: Pick<ExecutionRow, "triggerPayload">): NodeInput {
+  const payload = row.triggerPayload as { items?: unknown } | null;
+  if (payload && Array.isArray(payload.items) && payload.items.length > 0) {
+    return { items: payload.items as NodeInput["items"] };
+  }
+  return defaultInitialInput();
 }

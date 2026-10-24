@@ -102,7 +102,11 @@ function NodeSummary({
         </span>
       );
     case "webhookTrigger":
-      return <span className="font-mono">{String(config.method ?? "POST")} /{String(config.path ?? "")}</span>;
+      return config.provider === "whatsapp" ? (
+        <span>WhatsApp</span>
+      ) : (
+        <span className="font-mono">{String(config.method ?? "POST")}</span>
+      );
     case "scheduleTrigger":
       return <span>a cada {String(config.interval ?? 60)}s</span>;
     case "delay":

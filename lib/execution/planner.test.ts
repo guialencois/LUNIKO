@@ -19,7 +19,7 @@ describe("buildExecutionPlan", () => {
       [edge("e1", "t", "s")]
     );
     const plan = buildExecutionPlan("wf1", raw);
-    expect(plan.manualTriggerNodeId).toBe("t");
+    expect(plan.triggerNodeId).toBe("t");
     expect(plan.topologicalOrder).toEqual(["t", "s"]);
     expect(plan.nodes).toHaveLength(2);
     expect(plan.edges).toHaveLength(1);

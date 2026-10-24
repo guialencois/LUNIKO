@@ -3,9 +3,9 @@ import { ExecutionErrorCode } from "../errors";
 import type { NodeExecutor } from "../types";
 
 /**
- * webhookTrigger and scheduleTrigger are trigger definitions only in this
- * phase (item 17 do prompt mestre) — there is no real webhook endpoint and
- * no real scheduler. They're also not valid as the entry point for manual
+ * scheduleTrigger is a trigger definition only in this phase (item 17 do
+ * prompt mestre) — there is no real scheduler yet. (webhookTrigger left
+ * this file in Fase 5A — see ./webhook-trigger.ts.) They're also not valid as the entry point for manual
  * execution (the planner requires exactly one manualTrigger — see
  * lib/execution/planner.ts), so this executor only exists in case one ends
  * up reachable mid-graph, which the planner doesn't otherwise forbid.
@@ -30,5 +30,4 @@ function notImplementedTrigger(nodeType: string, displayName: string): NodeExecu
   };
 }
 
-registerExecutor(notImplementedTrigger("webhookTrigger", "Webhook Trigger"));
 registerExecutor(notImplementedTrigger("scheduleTrigger", "Schedule Trigger"));

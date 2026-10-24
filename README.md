@@ -93,6 +93,8 @@ falha em `/api/health` — não é um erro misterioso, é a validação funciona
 | `DATABASE_URL` | sim | Supabase → Connect → **Transaction pooler, porta 6543** |
 | `ENCRYPTION_KEY` | sim | gere uma, mínimo 32 caracteres |
 | `CRON_SECRET` | não | segredo compartilhado com o agendador, mínimo 32 caracteres |
+| `WHATSAPP_VERIFY_TOKEN` | não | valor que VOCÊ escolhe (mínimo 16 caracteres) e cola no painel da Meta; usado pelo Webhook Trigger com origem WhatsApp |
+| `WHATSAPP_APP_SECRET` | não | "Chave secreta do app" na Meta (Configurações do app > Básico); confere a assinatura de cada evento |
 
 Sobre a `CRON_SECRET`: os endpoints internos (`/api/internal/worker` e `/api/internal/reaper`)
 **falham fechados**. Sem ela eles recusam toda requisição em vez de rodar sem autenticação.

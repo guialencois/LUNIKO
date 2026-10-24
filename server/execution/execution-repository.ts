@@ -278,6 +278,55 @@ export async function createQueuedExecution(
   return execution;
 }
 
+// ---- MODELO 3 (disparo externo por webhook — Fase 5A) ---------------------
+
+/**
+ * Cria a execução de um disparo por webhook, já na fila. Ver
+ * docs/webhook-trigger.md.
+ *
+ * Não existe usuário vivo aqui. A credencial foi o token da URL, e TUDO que
+ * identifica onde isto roda — workspace, workflow, autor — vem da linha de
+ * webhook_endpoints que o chamador já carregou do banco, nunca da request.
+ * O autor ainda precisa ser membro do workspace: uma URL não sobrevive ao
+ * acesso de quem a gerou.
+ *
+ * Devolve null quando `dedupeKey` já existe — o mesmo disparo entregue de
+ * novo (reenvio da Meta). A execução original continua sendo a única.
+ */
+export async function createWebhookExecution(input: {
+  endpointCreatedBy: string;
+  workspaceId: string;
+  workflowId: string;
+  triggerNodeId: string;
+  document: unknown;
+  items: { json: Record<string, unknown> }[];
+  dedupeKey: string | null;
+}) {
+  await requireWorkspaceMembership(input.endpointCreatedBy, input.workspaceId);
+
+  const [execution] = await db
+    .insert(executions)
+    .values({
+      workflowId: input.workflowId,
+      workspaceId: input.workspaceId,
+      status: "queued",
+      document: input.document,
+      triggerType: "webhook",
+      triggerNodeId: input.triggerNodeId,
+      triggerPayload: { items: input.items },
+      triggerDedupeKey: input.dedupeKey,
+      runner: "worker",
+      createdBy: input.endpointCreatedBy,
+    })
+    // Sem alvo de propósito: as únicas UNIQUE de executions são a PK
+    // (gerada aqui, não colide) e executions_trigger_dedupe_key_unique, que
+    // é parcial — e um alvo de índice parcial exige repetir o WHERE dele.
+    .onConflictDoNothing()
+    .returning();
+
+  return execution ?? null;
+}
+
 // ---- MODELO 2 (worker interno) --------------------------------------------
 
 /**

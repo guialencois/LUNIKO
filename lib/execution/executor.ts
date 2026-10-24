@@ -88,7 +88,7 @@ export async function runExecutionPlan(
     let input: NodeInput;
     const inputsByHandle: Record<string, NodeInput> = {};
 
-    if (nodeId === plan.manualTriggerNodeId) {
+    if (nodeId === plan.triggerNodeId) {
       input = options.initialInput;
     } else {
       const activeEdges = incomingEdges.filter((edge) => {
