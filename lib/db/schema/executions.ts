@@ -21,7 +21,13 @@ export const executions = pgTable(
     // — Fase 2 has no workflow_versions table, this is the minimal "clear
     // reference to the executed document" the spec asks for instead).
     document: jsonb("document").notNull(),
-    triggerType: text("trigger_type", { enum: ["manual"] }).notNull().default("manual"),
+    triggerType: text("trigger_type", { enum: ["manual", "webhook"] }).notNull().default("manual"),
+    // Fase 5A (0009_webhook_trigger.sql). Nulos em execuções manuais.
+    // trigger_node_id: de qual nó começa. trigger_payload: { items } de entrada.
+    // trigger_dedupe_key: identidade de um disparo que pode chegar repetido.
+    triggerNodeId: text("trigger_node_id"),
+    triggerPayload: jsonb("trigger_payload"),
+    triggerDedupeKey: text("trigger_dedupe_key"),
     // Fase 4G: qual lifecycle é dono desta execução (0004_execution_runner.sql).
     // "request" = roda dentro de uma request HTTP viva (caminho síncrono),
     // nunca enfileirada e nunca tocada pelo reaper. "worker" = pertence à

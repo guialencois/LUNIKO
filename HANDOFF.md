@@ -305,6 +305,23 @@ as colunas de resolução ao histórico; execução síncrona zumbi travando o
 arquivamento) e 3 menores — **todos corrigidos**, com teste e controle
 negativo. Vitest: escrito, **não executado** (npm 403).
 
+## Fase 5A — Webhook Trigger: CÓDIGO ESCRITO (não validado em runtime)
+
+Leia **`docs/webhook-trigger.md`** antes de mexer. Resumo: `webhookTrigger`
+deixou de ser `NOT_IMPLEMENTED`. Cada nó ganha uma URL `/api/hooks/<token>`
+(tabela `webhook_endpoints`, gerada pelo painel do nó). Um disparo cria uma
+execução `queued` com `trigger_type='webhook'`, `trigger_node_id` e
+`trigger_payload` (migration `0009_webhook_trigger.sql`); o worker lê os
+dois da linha. O planner aceita `{ type: "webhook", nodeId }` e o campo do
+plano virou `triggerNodeId` (antes `manualTriggerNodeId`). Origem
+`whatsapp` trata desafio e assinatura da Meta antes de qualquer nó.
+
+Validado até aqui: testes unitários do planner/executor/payload/WhatsApp
+rodados com um shim mínimo de vitest (sem `npm install` disponível), e um
+typecheck com stubs dos pacotes externos. **Faltam** `npm ci`, typecheck,
+lint, testes e build reais, e um teste de integração do caminho
+`/api/hooks` → fila → worker contra um Postgres real.
+
 ## Testes existentes (todos escritos, nenhum executado)
 
 Testes unitários puros (não precisam de banco):

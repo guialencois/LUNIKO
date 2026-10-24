@@ -52,7 +52,11 @@ export const config = {
     /*
      * Match everything except static assets and image optimization files,
      * so the session cookie stays fresh on every navigable route.
+     *
+     * /api/hooks/* (Fase 5A) is left out too: it is called by outside
+     * services with no session at all, so a Supabase auth round-trip there
+     * is pure latency on a path that has to answer fast.
      */
-    "/((?!_next/static|_next/image|favicon.ico).*)",
+    "/((?!_next/static|_next/image|favicon.ico|api/hooks/).*)",
   ],
 };

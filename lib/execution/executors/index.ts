@@ -5,6 +5,7 @@
  * to be populated.
  */
 import "./manual-trigger";
+import "./webhook-trigger";
 import "./set";
 import "./transform";
 import "./if";

@@ -22,6 +22,14 @@ const serverEnvSchema = z.object({
    * never "internal endpoints open".
    */
   CRON_SECRET: z.string().min(32, "CRON_SECRET must be at least 32 characters").optional(),
+  /**
+   * WhatsApp (Meta) origin of the Webhook Trigger (docs/webhook-trigger.md). Optional for the
+   * same reason as CRON_SECRET: unset means the webhook refuses everything,
+   * never that it is open. VERIFY_TOKEN is a value WE choose and type into
+   * the Meta panel; APP_SECRET comes from Meta (App settings > Basic).
+   */
+  WHATSAPP_VERIFY_TOKEN: z.string().min(16, "WHATSAPP_VERIFY_TOKEN must be at least 16 characters").optional(),
+  WHATSAPP_APP_SECRET: z.string().min(1).optional(),
 });
 
 const publicEnvSchema = z.object({
@@ -45,5 +53,7 @@ export const serverEnv =
         SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
         ENCRYPTION_KEY: process.env.ENCRYPTION_KEY,
         CRON_SECRET: process.env.CRON_SECRET,
+        WHATSAPP_VERIFY_TOKEN: process.env.WHATSAPP_VERIFY_TOKEN,
+        WHATSAPP_APP_SECRET: process.env.WHATSAPP_APP_SECRET,
       })
     : (undefined as never);

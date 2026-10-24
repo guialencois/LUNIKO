@@ -145,9 +145,17 @@ export interface ExecutionPlan {
    *  skipping nodes that turn out not to be reachable from the trigger
    *  once branch decisions are known (see lib/execution/executor.ts). */
   topologicalOrder: string[];
-  /** The single manualTrigger node this plan starts from. */
-  manualTriggerNodeId: string;
+  /** The trigger node this run starts from: the single manualTrigger for
+   *  a manual run, or the specific webhookTrigger that received the call.
+   *  Only this node gets the initial input; every other node with no
+   *  incoming edge (including other triggers) is simply not reached. */
+  triggerNodeId: string;
 }
+
+/** Which trigger a plan is built for. Manual is the default, unchanged. */
+export type PlanTrigger =
+  | { type: "manual" }
+  | { type: "webhook"; nodeId: string };
 
 // ---- Limits (item 30) -----------------------------------------------------
 

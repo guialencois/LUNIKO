@@ -51,6 +51,7 @@ export function NodePropertiesPanel() {
 
         <ConfigForm
           key={node.id}
+          nodeId={node.id}
           nodeType={node.data.nodeType}
           config={node.data.config}
           onChange={(config) => updateNodeConfig(node.id, config)}
@@ -61,6 +62,7 @@ export function NodePropertiesPanel() {
 }
 
 interface ConfigFormProps {
+  nodeId: string;
   nodeType: string;
   config: Record<string, unknown>;
   onChange: (config: Record<string, unknown>) => void;
@@ -78,12 +80,12 @@ interface NodeConfigFormProps {
  * específica"). Every other type falls back to a JSON editor validated
  * against its own configSchema before being applied — never applied blind.
  */
-function ConfigForm({ nodeType, config, onChange }: ConfigFormProps) {
+function ConfigForm({ nodeId, nodeType, config, onChange }: ConfigFormProps) {
   switch (nodeType) {
     case "httpRequest":
       return <HttpRequestForm config={config} onChange={onChange} />;
     case "webhookTrigger":
-      return <WebhookTriggerForm config={config} onChange={onChange} />;
+      return <WebhookTriggerForm nodeId={nodeId} config={config} onChange={onChange} />;
     case "scheduleTrigger":
       return <ScheduleTriggerForm config={config} onChange={onChange} />;
     case "delay":
@@ -91,7 +93,7 @@ function ConfigForm({ nodeType, config, onChange }: ConfigFormProps) {
     case "code":
       return <CodeForm config={config} onChange={onChange} />;
     default:
-      return <RawJsonForm nodeType={nodeType} config={config} onChange={onChange} />;
+      return <RawJsonForm nodeId={nodeId} nodeType={nodeType} config={config} onChange={onChange} />;
   }
 }
 
@@ -129,35 +131,125 @@ function HttpRequestForm({ config, onChange }: NodeConfigFormProps) {
   );
 }
 
-function WebhookTriggerForm({ config, onChange }: NodeConfigFormProps) {
+/**
+ * Fase 5A — ver docs/webhook-trigger.md. A URL só é gerada para um nó que já
+ * está no workflow SALVO: o servidor confere isso, e o botão avisa antes.
+ */
+function WebhookTriggerForm({ nodeId, config, onChange }: NodeConfigFormProps & { nodeId: string }) {
+  const workflowId = useWorkflowEditorStore((s) => s.workflowId);
+  const isDirty = useWorkflowEditorStore((s) => s.isDirty);
+  const provider = String(config.provider ?? "generic");
+  const [url, setUrl] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (!workflowId) return;
+    let cancelled = false;
+    fetch(`/api/workflows/${workflowId}/webhooks?nodeId=${encodeURIComponent(nodeId)}`)
+      .then((r) => (r.ok ? r.json() : { url: null }))
+      .then((data: { url: string | null }) => {
+        if (!cancelled) setUrl(data.url);
+      })
+      .catch(() => {
+        // Sem URL ainda é o estado normal; o botão continua disponível.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [workflowId, nodeId]);
+
+  async function generate() {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/workflows/${workflowId}/webhooks`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ nodeId }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        setError(data?.error?.message ?? "Não foi possível gerar a URL");
+        return;
+      }
+      setUrl(data.url);
+    } catch {
+      setError("Não foi possível gerar a URL");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function copy() {
+    if (!url) return;
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Sem permissão de clipboard: o campo continua selecionável.
+    }
+  }
+
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-col gap-1.5">
-        <Label htmlFor="webhook-method">Method</Label>
+        <Label htmlFor="webhook-provider">Origem</Label>
         <select
-          id="webhook-method"
+          id="webhook-provider"
           className="h-10 rounded-md border border-border bg-background px-3 text-sm"
-          value={String(config.method ?? "POST")}
-          onChange={(e) => onChange({ ...config, method: e.target.value })}
+          value={provider}
+          onChange={(e) => onChange({ ...config, provider: e.target.value })}
         >
-          {["GET", "POST", "PUT"].map((m) => (
-            <option key={m} value={m}>
-              {m}
-            </option>
-          ))}
+          <option value="generic">Genérico (qualquer serviço)</option>
+          <option value="whatsapp">WhatsApp (Meta Cloud API)</option>
         </select>
       </div>
+
+      {provider === "generic" && (
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="webhook-method">Method</Label>
+          <select
+            id="webhook-method"
+            className="h-10 rounded-md border border-border bg-background px-3 text-sm"
+            value={String(config.method ?? "POST")}
+            onChange={(e) => onChange({ ...config, method: e.target.value })}
+          >
+            {["GET", "POST", "PUT"].map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
       <div className="flex flex-col gap-1.5">
-        <Label htmlFor="webhook-path">Path</Label>
-        <Input
-          id="webhook-path"
-          placeholder="my-webhook"
-          value={String(config.path ?? "")}
-          onChange={(e) => onChange({ ...config, path: e.target.value })}
-        />
+        <Label htmlFor="webhook-url">URL</Label>
+        {url ? (
+          <div className="flex gap-2">
+            <Input id="webhook-url" readOnly value={url} onFocus={(e) => e.currentTarget.select()} />
+            <Button type="button" variant="outline" size="sm" onClick={copy}>
+              {copied ? "Copiada" : "Copiar"}
+            </Button>
+          </div>
+        ) : (
+          <Button type="button" variant="outline" size="sm" disabled={loading || isDirty} onClick={generate}>
+            {loading ? "Gerando..." : "Gerar URL"}
+          </Button>
+        )}
+        {!url && isDirty && (
+          <p className="text-[11px] text-muted-foreground">Salve o workflow antes de gerar a URL.</p>
+        )}
+        {error && <p className="text-xs text-destructive">{error}</p>}
       </div>
+
       <p className="text-[11px] text-muted-foreground">
-        O endpoint real será criado na Fase 5. Aqui você só define a forma esperada.
+        {provider === "whatsapp"
+          ? "Cole esta URL no painel da Meta (WhatsApp > Configuração > Webhook). Cada mensagem recebida vira um item. A assinatura da Meta é conferida antes de o workflow rodar."
+          : "Quem chamar esta URL dispara o workflow. Trate-a como uma senha."}
       </p>
     </div>
   );
