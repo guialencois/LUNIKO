@@ -98,7 +98,7 @@ const edgeTypes = { workflowEdge: ConnectableEdge };
  * "+" on the middle of an existing edge (ConnectableEdge above, which
  * splits that edge around the new node).
  */
-type PendingConnection =
+export type PendingConnection =
   | { kind: "drag"; nodeId: string; handleId: string | null; handleType: "source" | "target" }
   | { kind: "output-button"; nodeId: string; handleId: string }
   | {
@@ -283,82 +283,14 @@ export function WorkflowCanvas() {
   const handlePickNode = useCallback(
     (nodeType: string) => {
       if (!picker) return;
-      assertKnownNodeType(nodeType);
-      const definition = getNodeDefinition(nodeType)!;
-      const newNodeId = `node_${crypto.randomUUID()}`;
-      const firstInputId = definition.inputs[0]?.id;
-      const firstOutputId = definition.outputs[0]?.id;
+      const result = buildPickResult(picker.pending, nodeType, picker.flowPosition);
 
-      const newNode: WorkflowRFNode = {
-        id: newNodeId,
-        type: "workflowNode",
-        position: picker.flowPosition,
-        data: {
-          nodeType,
-          label: definition.displayName,
-          config: definition.defaultData,
-        },
-      };
-
-      const { pending } = picker;
-      const newEdges: Array<{
-        source: string;
-        sourceHandle?: string;
-        target: string;
-        targetHandle?: string;
-      }> = [];
-
-      if (pending.kind === "drag") {
-        if (pending.handleType === "source") {
-          if (firstInputId) {
-            newEdges.push({
-              source: pending.nodeId,
-              sourceHandle: pending.handleId ?? undefined,
-              target: newNodeId,
-              targetHandle: firstInputId,
-            });
-          }
-        } else if (firstOutputId) {
-          newEdges.push({
-            source: newNodeId,
-            sourceHandle: firstOutputId,
-            target: pending.nodeId,
-            targetHandle: pending.handleId ?? undefined,
-          });
-        }
-      } else if (pending.kind === "output-button") {
-        if (firstInputId) {
-          newEdges.push({
-            source: pending.nodeId,
-            sourceHandle: pending.handleId,
-            target: newNodeId,
-            targetHandle: firstInputId,
-          });
-        }
-      } else if (pending.kind === "edge-split") {
-        if (firstInputId) {
-          newEdges.push({
-            source: pending.source,
-            sourceHandle: pending.sourceHandle ?? undefined,
-            target: newNodeId,
-            targetHandle: firstInputId,
-          });
-        }
-        if (firstOutputId) {
-          newEdges.push({
-            source: newNodeId,
-            sourceHandle: firstOutputId,
-            target: pending.target,
-            targetHandle: pending.targetHandle ?? undefined,
-          });
-        }
-      }
-
-      setNodes((prev) => [...prev, newNode]);
+      setNodes((prev) => [...prev, result.newNode]);
       setEdges((prev) => {
-        const base =
-          pending.kind === "edge-split" ? prev.filter((e) => e.id !== pending.edgeId) : prev;
-        return newEdges.reduce(
+        const base = result.removeEdgeId
+          ? prev.filter((e) => e.id !== result.removeEdgeId)
+          : prev;
+        return result.newEdges.reduce(
           (acc, conn) =>
             addEdge({ ...conn, type: "workflowEdge", id: `edge_${crypto.randomUUID()}` }, acc),
           base
@@ -413,4 +345,100 @@ export function assertKnownNodeType(type: string) {
   if (!isRegisteredNodeType(type)) {
     throw new Error(`Cannot add unknown node type: ${type}`);
   }
+}
+
+type SimpleConnection = { source: string; sourceHandle?: string; target: string; targetHandle?: string };
+
+export interface PickResult {
+  newNode: WorkflowRFNode;
+  newEdges: SimpleConnection[];
+  /** Set only for an edge-split pick — the original edge that gets
+   *  replaced by the two new ones around the inserted node. */
+  removeEdgeId?: string;
+}
+
+/**
+ * Pure core of "pick a node type and have it created + wired up", factored
+ * out of handlePickNode so it's testable without mounting <WorkflowCanvas>
+ * (this project's test setup doesn't stub ResizeObserver/@xyflow/react's
+ * jsdom needs yet — see workflow-editor.add-node.test.tsx). Everything
+ * React-y (state, crypto.randomUUID for ids) stays in the component;
+ * this function only decides WHAT node and edges to produce for a given
+ * PendingConnection.
+ */
+export function buildPickResult(
+  pending: PendingConnection,
+  nodeType: string,
+  flowPosition: { x: number; y: number }
+): PickResult {
+  assertKnownNodeType(nodeType);
+  const definition = getNodeDefinition(nodeType)!;
+  const newNodeId = `node_${crypto.randomUUID()}`;
+  const firstInputId = definition.inputs[0]?.id;
+  const firstOutputId = definition.outputs[0]?.id;
+
+  const newNode: WorkflowRFNode = {
+    id: newNodeId,
+    type: "workflowNode",
+    position: flowPosition,
+    data: {
+      nodeType,
+      label: definition.displayName,
+      config: definition.defaultData,
+    },
+  };
+
+  const newEdges: SimpleConnection[] = [];
+
+  if (pending.kind === "drag") {
+    if (pending.handleType === "source") {
+      if (firstInputId) {
+        newEdges.push({
+          source: pending.nodeId,
+          sourceHandle: pending.handleId ?? undefined,
+          target: newNodeId,
+          targetHandle: firstInputId,
+        });
+      }
+    } else if (firstOutputId) {
+      newEdges.push({
+        source: newNodeId,
+        sourceHandle: firstOutputId,
+        target: pending.nodeId,
+        targetHandle: pending.handleId ?? undefined,
+      });
+    }
+  } else if (pending.kind === "output-button") {
+    if (firstInputId) {
+      newEdges.push({
+        source: pending.nodeId,
+        sourceHandle: pending.handleId,
+        target: newNodeId,
+        targetHandle: firstInputId,
+      });
+    }
+  } else if (pending.kind === "edge-split") {
+    if (firstInputId) {
+      newEdges.push({
+        source: pending.source,
+        sourceHandle: pending.sourceHandle ?? undefined,
+        target: newNodeId,
+        targetHandle: firstInputId,
+      });
+    }
+    if (firstOutputId) {
+      newEdges.push({
+        source: newNodeId,
+        sourceHandle: firstOutputId,
+        target: pending.target,
+        targetHandle: pending.targetHandle ?? undefined,
+      });
+    }
+  }
+
+  return {
+    newNode,
+    newEdges,
+    removeEdgeId: pending.kind === "edge-split" ? pending.edgeId : undefined,
+  };
 }
