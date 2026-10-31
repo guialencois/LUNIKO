@@ -30,6 +30,15 @@ const serverEnvSchema = z.object({
    */
   WHATSAPP_VERIFY_TOKEN: z.string().min(16, "WHATSAPP_VERIFY_TOKEN must be at least 16 characters").optional(),
   WHATSAPP_APP_SECRET: z.string().min(1).optional(),
+  /**
+   * Fixed destination for the googleCalendar node's effect provider
+   * (server/execution/effects/providers/n8n/calendar.ts) — the Production
+   * URL of a workflow the user builds in their own n8n. Optional like the
+   * WhatsApp vars above: unset means that node's executor fails closed
+   * (EXTERNAL_EFFECTS_UNAVAILABLE-style refusal), never that it falls back
+   * to some other, unvetted destination.
+   */
+  N8N_CALENDAR_WEBHOOK_URL: z.string().url().optional(),
 });
 
 const publicEnvSchema = z.object({
@@ -55,5 +64,6 @@ export const serverEnv =
         CRON_SECRET: process.env.CRON_SECRET,
         WHATSAPP_VERIFY_TOKEN: process.env.WHATSAPP_VERIFY_TOKEN,
         WHATSAPP_APP_SECRET: process.env.WHATSAPP_APP_SECRET,
+        N8N_CALENDAR_WEBHOOK_URL: process.env.N8N_CALENDAR_WEBHOOK_URL,
       })
     : (undefined as never);

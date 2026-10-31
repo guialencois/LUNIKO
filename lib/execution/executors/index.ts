@@ -14,4 +14,5 @@ import "./merge";
 import "./delay";
 import "./http-request";
 import "./code";
+import "./google-calendar";
 import "./triggers-not-implemented";
