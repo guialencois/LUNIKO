@@ -132,11 +132,15 @@ function NodeSummary({
         </span>
       );
     case "webhookTrigger":
-      return config.provider === "whatsapp" ? (
-        <span>WhatsApp</span>
-      ) : (
-        <span className="font-mono">{String(config.method ?? "POST")}</span>
-      );
+      if (config.provider === "whatsapp") return <span>WhatsApp</span>;
+      if (config.provider === "instagram") return <span>Instagram (sem executor ainda)</span>;
+      return <span className="font-mono">{String(config.method ?? "POST")}</span>;
+    case "googleCalendar":
+      return <span>{String(config.summary ?? "") || "(sem título)"}</span>;
+    case "googleSheets":
+      return <span className="font-mono">{String(config.spreadsheetId ?? "") || "(sem planilha)"}</span>;
+    case "aiAgent":
+      return <span>{String(config.systemPrompt ?? "").slice(0, 40) || "(sem prompt)"}</span>;
     case "scheduleTrigger":
       return <span>a cada {String(config.interval ?? 60)}s</span>;
     case "delay":

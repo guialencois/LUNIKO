@@ -128,6 +128,14 @@ export async function receiveWebhook(
     items = buildWhatsappItems(parsed.messages);
     // A Meta reenvia o MESMO corpo quando não recebe 200 a tempo.
     dedupeKey = `whatsapp:${endpoint.id}:${createHash("sha256").update(request.rawBody, "utf8").digest("hex")}`;
+  } else if (config.data.provider === "instagram") {
+    // Existe no editor (webhook-trigger.ts) mas não aqui ainda — ver o
+    // comentário lá. 501 explícito em vez de cair no branch genérico: o
+    // genérico aceitaria o GET do desafio da Meta como se fosse um
+    // request comum e nunca devolveria o challenge, então a verificação
+    // do webhook no painel da Meta falharia de um jeito confuso em vez de
+    // dizer claramente "ainda não dá para usar isso".
+    return fail(501, "NOT_IMPLEMENTED", "Instagram webhook support is not implemented yet.");
   } else {
     if (request.method !== config.data.method) {
       return fail(405, "METHOD_NOT_ALLOWED", `This webhook only accepts ${config.data.method}`);

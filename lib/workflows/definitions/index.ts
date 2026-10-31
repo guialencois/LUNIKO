@@ -21,3 +21,6 @@ import "./transform";
 import "./merge";
 import "./delay";
 import "./code";
+import "./google-calendar";
+import "./google-sheets";
+import "./ai-agent";
