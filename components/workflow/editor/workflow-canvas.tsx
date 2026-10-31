@@ -219,8 +219,21 @@ export function WorkflowCanvas() {
       const droppedOnPane = !!target?.closest(".react-flow__pane");
       if (!droppedOnPane) return;
 
-      const point = "changedTouches" in event ? event.changedTouches[0] : event;
-      const screenPosition = { x: point.clientX, y: point.clientY };
+      // tsconfig has noUncheckedIndexedAccess on, so TouchList's index
+      // signature returns `Touch | undefined` here — a touch end with no
+      // changedTouches entry is not expected, but still has to typecheck.
+      let clientX: number;
+      let clientY: number;
+      if ("changedTouches" in event) {
+        const touch = event.changedTouches[0];
+        if (!touch) return;
+        clientX = touch.clientX;
+        clientY = touch.clientY;
+      } else {
+        clientX = event.clientX;
+        clientY = event.clientY;
+      }
+      const screenPosition = { x: clientX, y: clientY };
 
       setPicker({
         screenPosition,
