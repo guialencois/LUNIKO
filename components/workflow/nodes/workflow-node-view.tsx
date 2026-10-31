@@ -2,12 +2,13 @@
 
 import { memo } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
-import { AlertCircle } from "lucide-react";
+import { AlertCircle, Plus } from "lucide-react";
 import { getNodeDefinition } from "@/lib/workflows/registry";
 import { getNodeIcon } from "./node-icon-map";
 import { cn } from "@/lib/utils";
 import type { WorkflowRFNode } from "@/lib/workflows/convert";
 import { useExecutionStore } from "../editor/execution-store";
+import { useCanvasActions } from "../editor/canvas-actions-context";
 
 /**
  * Deliberately a single component for every node type (item 56 do prompt
@@ -29,10 +30,14 @@ function WorkflowNodeViewImpl({ id, data, selected }: NodeProps<WorkflowRFNode>)
   const executionErrorNodeId = useExecutionStore((s) => s.error?.nodeId);
   const failedHere = executionStatus === "error" && executionErrorNodeId === id;
 
+  // Null outside WorkflowCanvas (e.g. a node rendered in isolation in a
+  // test) — the "+" affordance below simply doesn't render in that case.
+  const canvasActions = useCanvasActions();
+
   return (
     <div
       className={cn(
-        "min-w-[220px] rounded-lg border bg-background shadow-sm transition-colors",
+        "group relative min-w-[220px] rounded-lg border bg-background shadow-sm transition-colors",
         failedHere
           ? "border-destructive ring-2 ring-destructive/30"
           : selected
@@ -72,16 +77,41 @@ function WorkflowNodeViewImpl({ id, data, selected }: NodeProps<WorkflowRFNode>)
         <NodeSummary nodeType={data.nodeType} config={data.config} />
       </div>
 
-      {outputs.map((output, index) => (
-        <Handle
-          key={output.id}
-          id={output.id}
-          type="source"
-          position={Position.Right}
-          style={{ top: 24 + index * 16 }}
-          className="!h-2.5 !w-2.5 !border-2 !border-background !bg-primary"
-        />
-      ))}
+      {outputs.map((output, index) => {
+        const top = 24 + index * 16;
+        return (
+          <div key={output.id}>
+            <Handle
+              id={output.id}
+              type="source"
+              position={Position.Right}
+              style={{ top }}
+              className="!h-2.5 !w-2.5 !border-2 !border-background !bg-primary"
+            />
+            {/* "Fácil conexão": hover an idle output to add+wire the next
+             *  node in one step, instead of adding from the sidebar and
+             *  then dragging a separate edge. Visible on node hover so the
+             *  canvas doesn't look cluttered with a "+" per output at rest. */}
+            {canvasActions && (
+              <button
+                type="button"
+                title="Adicionar node conectado"
+                style={{ top, right: -26 }}
+                className="absolute z-10 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-full border border-dashed border-primary/50 bg-background text-primary opacity-0 transition-opacity hover:border-solid hover:bg-primary hover:text-primary-foreground group-hover:opacity-100"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  canvasActions.onRequestAddFromOutput(id, output.id, {
+                    x: e.clientX,
+                    y: e.clientY,
+                  });
+                }}
+              >
+                <Plus className="h-3 w-3" />
+              </button>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
