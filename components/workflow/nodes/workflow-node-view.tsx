@@ -141,6 +141,8 @@ function NodeSummary({
       return <span className="font-mono">{String(config.spreadsheetId ?? "") || "(sem planilha)"}</span>;
     case "aiAgent":
       return <span>{String(config.systemPrompt ?? "").slice(0, 40) || "(sem prompt)"}</span>;
+    case "metaConversionsApi":
+      return <span>{String(config.eventName ?? "Purchase")}</span>;
     case "scheduleTrigger":
       return <span>a cada {String(config.interval ?? 60)}s</span>;
     case "delay":

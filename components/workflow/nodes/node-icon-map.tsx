@@ -13,6 +13,7 @@ import {
   Calendar,
   Sheet,
   Bot,
+  Target,
   type LucideIcon,
 } from "lucide-react";
 
@@ -31,6 +32,7 @@ export const nodeIconMap: Record<string, LucideIcon> = {
   Calendar,
   Sheet,
   Bot,
+  Target,
 };
 
 export function getNodeIcon(iconName: string): LucideIcon {
