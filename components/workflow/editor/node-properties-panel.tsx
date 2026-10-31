@@ -205,8 +205,17 @@ function WebhookTriggerForm({ nodeId, config, onChange }: NodeConfigFormProps & 
         >
           <option value="generic">Genérico (qualquer serviço)</option>
           <option value="whatsapp">WhatsApp (Meta Cloud API)</option>
+          <option value="instagram">Instagram (ainda sem executor)</option>
         </select>
       </div>
+
+      {provider === "instagram" && (
+        <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-700 dark:text-amber-400">
+          Esse provider existe só para desenhar o fluxo. Chamar esta URL hoje
+          responde 501 (não implementado) — a verificação de assinatura e o
+          parser do payload do Instagram ainda não foram feitos.
+        </p>
+      )}
 
       {provider === "generic" && (
         <div className="flex flex-col gap-1.5">
@@ -249,7 +258,9 @@ function WebhookTriggerForm({ nodeId, config, onChange }: NodeConfigFormProps & 
       <p className="text-[11px] text-muted-foreground">
         {provider === "whatsapp"
           ? "Cole esta URL no painel da Meta (WhatsApp > Configuração > Webhook). Cada mensagem recebida vira um item. A assinatura da Meta é conferida antes de o workflow rodar."
-          : "Quem chamar esta URL dispara o workflow. Trate-a como uma senha."}
+          : provider === "instagram"
+            ? "Ainda não cole esta URL em lugar nenhum — toda chamada recebe 501 até o executor existir."
+            : "Quem chamar esta URL dispara o workflow. Trate-a como uma senha."}
       </p>
     </div>
   );

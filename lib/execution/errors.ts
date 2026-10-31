@@ -35,6 +35,10 @@ export const ExecutionErrorCode = {
   EXTERNAL_EFFECT_PAYLOAD_MISMATCH: "EXTERNAL_EFFECT_PAYLOAD_MISMATCH",
   /** This attempt lost ownership of the execution. Nothing was sent. */
   EXTERNAL_EFFECT_FENCED: "EXTERNAL_EFFECT_FENCED",
+  /** The provider's destination (a webhook URL, say) has no env var set in
+   *  this environment. Distinct from NOT_IMPLEMENTED: the code to call it
+   *  exists, it just has nowhere to call. */
+  EXTERNAL_EFFECT_NOT_CONFIGURED: "EXTERNAL_EFFECT_NOT_CONFIGURED",
   /** The operation's state could not be settled. Nothing was sent. */
   EXTERNAL_EFFECT_NOT_ATTEMPTED: "EXTERNAL_EFFECT_NOT_ATTEMPTED",
 } as const;

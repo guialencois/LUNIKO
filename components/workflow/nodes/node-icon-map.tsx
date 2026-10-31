@@ -10,6 +10,10 @@ import {
   Merge as MergeIcon,
   Timer,
   Code2,
+  Calendar,
+  Sheet,
+  Bot,
+  Target,
   type LucideIcon,
 } from "lucide-react";
 
@@ -25,6 +29,10 @@ export const nodeIconMap: Record<string, LucideIcon> = {
   Merge: MergeIcon,
   Timer,
   Code2,
+  Calendar,
+  Sheet,
+  Bot,
+  Target,
 };
 
 export function getNodeIcon(iconName: string): LucideIcon {

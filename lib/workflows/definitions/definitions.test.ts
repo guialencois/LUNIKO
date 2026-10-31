@@ -5,8 +5,8 @@ import { getAllNodeDefinitions } from "../registry";
 describe("Node definitions", () => {
   const definitions = getAllNodeDefinitions();
 
-  it("has exactly 11 registered definitions", () => {
-    expect(definitions).toHaveLength(11);
+  it("has exactly 15 registered definitions", () => {
+    expect(definitions).toHaveLength(15);
   });
 
   it.each(definitions.map((d) => [d.type, d] as const))(
